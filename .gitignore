@@ -1,0 +1,17 @@
+# Dependências
+node_modules/
+
+# Credenciais da sessão WhatsApp (NUNCA commitar!)
+auth_info_integra/
+
+# Variáveis de ambiente (contém números sensíveis)
+.env
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
