@@ -2,7 +2,7 @@
  * =============================================================
  *  content.js — Conteúdo Real da Integra Psicanálise
  * =============================================================
- *  Fonte dos dados: https://integrapsicanalise.netlify.app
+ *  Fonte dos dados: https://integrapsicanalise.com
  *
  *  ✏️  Este é o ÚNICO arquivo que você precisa editar para
  *  atualizar informações do bot (preços, horários, endereço, etc.).
@@ -44,7 +44,7 @@ const CONTENT = {
     slogan:      'Formamos psicanalistas com rigor teórico, sensibilidade clínica e visão plural.',
     missao:      'Inovar a formação psicanalítica no Brasil, integrando as principais escolas e abordagens do pensamento clássico e contemporâneo.',
     diferencial: 'A única escola que integra todas as correntes psicanalíticas.',
-    site:        'https://integrapsicanalise.netlify.app',
+    site:        'https://integrapsicanalise.com',
     email:       'integrapsicanalise@gmail.com',
     instagram:   '@integrapsicanalise_',
     whatsapp:    '5581985761616', // formato internacional sem + (para links wa.me)
@@ -146,10 +146,6 @@ const CONTENT = {
   // ──────────────────────────────────────────────────────────
   docentes: {
     quantidade: 15,   // número total de professores do corpo docente
-    descricao:
-      'Nossa equipe é composta por 15 professores com sólida formação acadêmica, ' +
-      'ampla experiência clínica e verdadeira vocação para o ensino.',
-    contato_para_mais_info: true, // flag: bot direciona ao contato para ver currículos
   },
 
   // ──────────────────────────────────────────────────────────
@@ -221,7 +217,7 @@ const CONTENT = {
     telefone:            '(81) 98576-1616',           // exibido para o usuário
     email:               'integrapsicanalise@gmail.com',
     instagram:           '@integrapsicanalise_',
-    site:                'https://integrapsicanalise.netlify.app',
+    site:                'https://integrapsicanalise.com',
     horario_atendimento: 'Segunda a Sábado, das 8h às 18h',
     agendamento_msg:     'Agendamentos de visita e inscrições são realizados pelo WhatsApp.',
   },

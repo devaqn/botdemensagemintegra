@@ -4,25 +4,16 @@
  * =============================================================
  *  Este arquivo é o coração do bot. Ele:
  *   1. Recebe cada mensagem bruta do WhatsApp
- *   2. Identifica o tipo (texto, clique em botão, seleção de lista)
+ *   2. Identifica o tipo (texto, seleção de lista)
  *   3. Roteia para a resposta correta
  *   4. Envia a resposta formatada ao usuário
  *
- *  Modo de interface (controlado pelo .env):
- *   MODO_BOTOES=false (padrão) → menu em TEXTO numerado (WhatsApp pessoal)
- *   MODO_BOTOES=true           → botões clicáveis reais (WhatsApp Business)
- *
- *  ⚠️  Por que não há mais detecção automática?
- *  WhatsApp pessoal ACEITA buttonsMessage sem dar erro — ele só não
- *  renderiza os botões visualmente. O try/catch nunca caia no catch,
- *  então o bot sempre achava que era Business. A solução correta é
- *  configurar manualmente via MODO_BOTOES no .env.
- *
- *  Navegação por número (modo texto):
+ *  Navegação por número (menu texto):
  *    1 → Sobre a Integra    4 → Condições e Benefícios
  *    2 → Formação e Módulos 5 → Unidade e Localização
  *    3 → Equipe Docente     6 → Contato / Agendamento
  *    7 → Falar com Consultor
+ *    8 → Finalizar atendimento
  *    0 → Voltar ao menu
  * =============================================================
  */
@@ -31,7 +22,13 @@
 
 require('dotenv').config(); // carrega variáveis do .env
 
+const fs     = require('fs');
+const path   = require('path');
 const CONTENT = require('./content');
+
+// ── Serviços de gestão comercial ─────────────────────────────
+const leadService = require('../services/leadService');
+const roundRobin  = require('../services/roundRobin');
 const {
   mensagemBoasVindas,
   saudacaoCurta,
@@ -43,121 +40,70 @@ const {
   textoUnidade,
   textoContato,
   textoConsultor,
-  textoForaDeHorario,
   textoFallback,
 } = require('./menus');
 
 // ────────────────────────────────────────────────────────────
-//  Configuração de modo (lida UMA vez ao iniciar o processo)
-// ────────────────────────────────────────────────────────────
-
-/**
- * Define se o bot usa botões reais (WhatsApp Business) ou menu em texto (pessoal).
- * Controlado pela variável de ambiente MODO_BOTOES no arquivo .env.
- *   MODO_BOTOES=false → texto numerado (padrão — funciona em qualquer WhatsApp)
- *   MODO_BOTOES=true  → botões clicáveis (apenas WhatsApp Business)
- */
-const MODO_BOTOES = process.env.MODO_BOTOES === 'true';
-
-// Loga o modo ativo ao iniciar para confirmar a configuração
-console.log(`[BOT] Modo de interface: ${MODO_BOTOES ? '✅ BOTÕES (Business)' : '📝 TEXTO (Pessoal)'}`);
-
-// ────────────────────────────────────────────────────────────
-//  Definição dos botões (usado apenas se MODO_BOTOES=true)
-//  buttonsMessage suporta no máximo 3 botões por mensagem.
-//  Por isso o menu é dividido em 2 mensagens (grupo 1 + grupo 2).
-// ────────────────────────────────────────────────────────────
-
-/**
- * Primeiro grupo de botões do menu principal (opções 1, 2, 3).
- * @returns {object} Payload de buttonsMessage para o Baileys
- */
-function menuBotoesGrupo1() {
-  return {
-    buttons: [
-      { buttonId: 'btn_sobre',    buttonText: { displayText: '🏛️ Sobre a Integra'    }, type: 1 },
-      { buttonId: 'btn_formacao', buttonText: { displayText: '📚 Formação e Módulos' }, type: 1 },
-      { buttonId: 'btn_docente',  buttonText: { displayText: '👨‍🏫 Equipe Docente'     }, type: 1 },
-    ],
-    text:       '🧠 *Integra Psicanálise — A Nova Escola*\n\nSelecione o que deseja saber:',
-    footer:     'Formação Psicanalítica Plural',
-    headerType: 1,
-  };
-}
-
-/**
- * Segundo grupo de botões do menu principal (opções 4, 5, 6).
- * @returns {object} Payload de buttonsMessage para o Baileys
- */
-function menuBotoesGrupo2() {
-  return {
-    buttons: [
-      { buttonId: 'btn_condicoes', buttonText: { displayText: '💰 Condições e Benefícios' }, type: 1 },
-      { buttonId: 'btn_unidade',   buttonText: { displayText: '📍 Unidade e Localização'  }, type: 1 },
-      { buttonId: 'btn_contato',   buttonText: { displayText: '📞 Contato / Agendamento'  }, type: 1 },
-    ],
-    text:       'Ou se preferir:',
-    footer:     'Integra Psicanálise',
-    headerType: 1,
-  };
-}
-
-/**
- * Terceiro grupo de botões do menu principal — opção "Falar com Consultor".
- *
- * Por que um grupo separado?
- *  - buttonsMessage suporta no MÁXIMO 3 botões por mensagem.
- *  - Grupos 1 e 2 já estão cheios (3+3 = 6 opções de informação).
- *  - O consultor precisa estar visível no menu principal para que o
- *    usuário Business não precise navegar por conteúdo antes de encontrá-lo.
- *
- * @returns {object} Payload de buttonsMessage para o Baileys
- */
-function menuBotoesGrupo3() {
-  return {
-    buttons: [
-      { buttonId: 'btn_consultor', buttonText: { displayText: '👩‍💼 Falar com Consultor' }, type: 1 },
-    ],
-    text:       'Ou prefere falar diretamente com um de nossos consultores?',
-    footer:     'Integra Psicanálise',
-    headerType: 1,
-  };
-}
-
-/**
- * Botões de retorno após resposta de conteúdo (modo Business).
- * @returns {object} Payload de buttonsMessage para o Baileys
- */
-function botoesRetorno() {
-  return {
-    buttons: [
-      { buttonId: 'btn_menu',      buttonText: { displayText: '↩️ Ver outras opções'   }, type: 1 },
-      { buttonId: 'btn_consultor', buttonText: { displayText: '👩‍💼 Falar com consultor' }, type: 1 },
-    ],
-    text:       'O que gostaria de fazer agora?',
-    footer:     'Integra Psicanálise',
-    headerType: 1,
-  };
-}
-
-/**
- * Botão único "Voltar ao menu" após acionar consultor (modo Business).
- * @returns {object} Payload de buttonsMessage para o Baileys
- */
-function botaoVoltarMenu() {
-  return {
-    buttons: [
-      { buttonId: 'btn_menu', buttonText: { displayText: '↩️ Voltar ao menu' }, type: 1 },
-    ],
-    text:       'Posso ajudar com mais alguma coisa?',
-    footer:     'Integra Psicanálise',
-    headerType: 1,
-  };
-}
-
-// ────────────────────────────────────────────────────────────
 //  Estado em memória
 // ────────────────────────────────────────────────────────────
+
+/**
+ * Cache de LID → número de telefone real.
+ * Persistido em disco (lid-cache.json) para sobreviver reinicializações.
+ */
+const LID_CACHE_FILE = path.join(__dirname, '..', 'lid-cache.json');
+const cacheContatosLid = new Map();
+
+// Carrega cache do disco na inicialização
+try {
+  const raw = fs.readFileSync(LID_CACHE_FILE, 'utf8');
+  const obj = JSON.parse(raw);
+  for (const [k, v] of Object.entries(obj)) cacheContatosLid.set(k, v);
+  console.log(`[BOT] 📂 Cache LID carregado: ${cacheContatosLid.size} entradas`);
+} catch (_) { /* arquivo inexistente na primeira execução */ }
+
+/** Persiste o cache em disco (chamado após novas entradas). */
+function salvarCacheLid() {
+  try {
+    fs.writeFileSync(LID_CACHE_FILE, JSON.stringify(Object.fromEntries(cacheContatosLid), null, 2));
+  } catch (e) {
+    console.error('[BOT] ❌ Erro ao salvar cache LID:', e.message);
+  }
+}
+
+/**
+ * Registra mapeamentos LID → telefone recebidos pelo evento contacts.upsert do Baileys.
+ * Chamado pelo connection.js a cada atualização de contatos.
+ * @param {Array} contacts - Array de contatos do evento contacts.upsert
+ */
+function atualizarCacheContatos(contacts) {
+  let novos = 0;
+  for (const c of (contacts || [])) {
+    if (!c?.id) continue;
+    // Formato: contato com id @s.whatsapp.net e campo lid
+    if (c.id.endsWith('@s.whatsapp.net') && c.lid) {
+      const phone = c.id.split('@')[0];
+      const lid   = String(c.lid).split('@')[0];
+      if (lid && phone && !cacheContatosLid.has(lid)) {
+        cacheContatosLid.set(lid, phone);
+        novos++;
+      }
+    }
+    // Formato inverso: id @lid, campo lid com o telefone real
+    if (c.id.endsWith('@lid') && c.lid) {
+      const lid   = c.id.split('@')[0];
+      const phone = String(c.lid).split('@')[0];
+      if (lid && phone && /^\d+$/.test(phone) && !cacheContatosLid.has(lid)) {
+        cacheContatosLid.set(lid, phone);
+        novos++;
+      }
+    }
+  }
+  if (novos > 0) {
+    salvarCacheLid();
+    console.log(`[BOT] 📋 Cache LID atualizado: +${novos} (total: ${cacheContatosLid.size})`);
+  }
+}
 
 /** JIDs que já receberam boas-vindas nesta sessão */
 const usuariosConhecidos = new Set();
@@ -217,9 +163,17 @@ const sessionTimers = new Map();
 /**
  * Tempo de inatividade (em ms) antes de encerrar automaticamente a sessão.
  * Padrão: 5 minutos (300.000 ms).
- * Pode ser ajustado via SESSION_TIMEOUT_MIN no .env futuramente.
  */
 const SESSION_TIMEOUT = 5 * 60 * 1_000; // 5 minutos
+
+/**
+ * Controla em quais tipos de chat o bot responde.
+ * Definido via MODO_ATENDIMENTO no .env:
+ *   privado → só mensagens diretas (padrão)
+ *   grupo   → só grupos
+ *   ambos   → privado + grupo
+ */
+const MODO_ATENDIMENTO = (process.env.MODO_ATENDIMENTO || 'privado').toLowerCase();
 
 // ────────────────────────────────────────────────────────────
 //  Tabelas de roteamento
@@ -240,8 +194,7 @@ const ROTAS_TEXTO = {
 
 /**
  * Mapeamento: buttonId clicado → { contexto, função de conteúdo }
- * Usado no modo Business quando o usuário clica em botão.
- * Inclui IDs legados de versões anteriores para retrocompatibilidade.
+ * Usado no modo Cloud API quando o usuário clica em botão interativo.
  */
 const ROTAS_BOTAO = {
   btn_sobre:     { ctx: 'Sobre a Integra Psicanálise', fn: textoSobre     },
@@ -250,11 +203,6 @@ const ROTAS_BOTAO = {
   btn_condicoes: { ctx: 'Condições e Benefícios',      fn: textoCondicoes },
   btn_unidade:   { ctx: 'Unidade e Localização',       fn: textoUnidade   },
   btn_contato:   { ctx: 'Contato / Agendamento',       fn: textoContato   },
-  // IDs legados (versões anteriores — mantidos para não quebrar sessões em curso)
-  btn_sedes:     { ctx: 'Unidade e Localização',       fn: textoUnidade   },
-  btn_horarios:  { ctx: 'Formação e Módulos',          fn: textoFormacao  },
-  btn_valores:   { ctx: 'Condições e Benefícios',      fn: textoCondicoes },
-  btn_inscricao: { ctx: 'Contato / Agendamento',       fn: textoContato   },
 };
 
 // ────────────────────────────────────────────────────────────
@@ -391,10 +339,24 @@ function extractTexto(message) {
 }
 
 /**
- * Extrai o ID do botão clicado (modo Business).
- * Suporta buttonsResponseMessage e templateButtonReplyMessage.
+ * Extrai o ID do botão clicado (Cloud API ou resposta de lista legada).
+ *
+ * Formatos suportados:
+ *  1. interactiveResponseMessage/nativeFlowMessage — respostas de botões Baileys nativos
+ *  2. buttonsResponseMessage — Cloud API button_reply (adaptado pelo webhookServer)
+ *  3. templateButtonReplyMessage — formato template
  */
 function extractButtonId(message) {
+  // ── Formato atual: interactiveMessage / nativeFlowMessage (quick_reply) ─────
+  const nativeFlow = message.message?.interactiveResponseMessage?.nativeFlowResponseMessage;
+  if (nativeFlow?.paramsJson) {
+    try {
+      const params = JSON.parse(nativeFlow.paramsJson);
+      if (params.id) return params.id;
+    } catch (_) {}
+  }
+
+  // ── Legado: buttonsMessage (depreciado — mantido para retrocompatibilidade) ──
   return (
     message.message?.buttonsResponseMessage?.selectedButtonId ||
     message.message?.templateButtonReplyMessage?.selectedId ||
@@ -431,64 +393,28 @@ function limparColecaoSeNecessario(colecao, maxSize = 5_000, batchDelete = 100) 
 // ────────────────────────────────────────────────────────────
 
 /**
- * Envia o menu principal ao usuário.
- * Modo texto (MODO_BOTOES=false): envia o menu numerado formatado.
- * Modo botões (MODO_BOTOES=true): envia três grupos de buttonsMessage.
+ * Envia o menu principal ao usuário como texto numerado.
+ * Compatível com qualquer WhatsApp (pessoal ou Business).
  *
- * Estrutura Business (3 mensagens):
- *   Grupo 1 → Sobre | Formação | Docente        (3 botões)
- *   Grupo 2 → Condições | Unidade | Contato      (3 botões)
- *   Grupo 3 → Falar com Consultor                (1 botão)
- *
- * Por que três mensagens separadas?
- *  - buttonsMessage suporta no máximo 3 botões por mensagem.
- *  - Sem o grupo 3, o usuário Business não teria acesso ao consultor
- *    diretamente pelo menu principal.
- *
- * @param {object} sock - Socket do Baileys
+ * @param {object} sock - Socket (Baileys ou sockCloud)
  * @param {string} jid  - JID do destinatário
  */
 async function enviarMenuPrincipal(sock, jid) {
-  if (!MODO_BOTOES) {
-    // Modo texto: simples e compatível com qualquer WhatsApp
-    return await sock.sendMessage(jid, { text: menuPrincipal() });
-  }
-
-  // Modo botões: envia os três grupos (3 + 3 + 1 botões)
-  try {
-    await sock.sendMessage(jid, menuBotoesGrupo1());
-    await sleep(350); // pausa para garantir ordem de entrega das mensagens
-    await sock.sendMessage(jid, menuBotoesGrupo2());
-    await sleep(350);
-    await sock.sendMessage(jid, menuBotoesGrupo3()); // consultor
-  } catch (_) {
-    // Fallback: se botões falharem por algum motivo, envia texto numerado
-    await sock.sendMessage(jid, { text: menuPrincipal() });
-  }
+  await sock.sendMessage(jid, { text: menuPrincipal() });
 }
 
 /**
  * Envia uma resposta de conteúdo longo ao usuário.
- * No modo texto o rodapé de navegação já vem embutido no texto (menus.js).
- * No modo botões adiciona os botoesRetorno() após o conteúdo.
+ * O rodapé de navegação (0 = menu | 7 = consultor | 8 = finalizar) já está
+ * embutido no texto gerado pelo menus.js (rodapeNavegacao).
  *
- * @param {object} sock          - Socket do Baileys
+ * @param {object} sock          - Socket (Baileys ou sockCloud)
  * @param {string} jid           - JID do destinatário
  * @param {string} textoCompleto - Texto formatado do menus.js
  */
 async function enviarConteudo(sock, jid, textoCompleto) {
-  // Simula digitação proporcional ao tamanho do conteúdo antes de enviar
   await simularDigitando(sock, jid, textoCompleto);
   await sock.sendMessage(jid, { text: textoCompleto });
-
-  if (MODO_BOTOES) {
-    try {
-      await sleep(300); // pequena pausa antes dos botões de retorno
-      await sock.sendMessage(jid, botoesRetorno());
-    } catch (_) {
-      // Silencioso: rodapé de texto "0 = menu | 7 = consultor" já está no conteúdo
-    }
-  }
 }
 
 /**
@@ -566,84 +492,105 @@ async function verificarAdmin(sock) {
 }
 
 /**
- * Verifica se um número extraído do JID é um telefone real no WhatsApp.
+ * Extrai o número de telefone de um JID do WhatsApp para montar link wa.me.
  *
- * Problema: o WhatsApp está migrando contas para um sistema de LID (Linked ID).
- * O LID é um número interno (ex: 14272293818523) que NÃO é o telefone do usuário.
- * O Baileys retorna esse LID no remoteJid, então não podemos usar direto no wa.me.
+ * Problema: o WhatsApp migrou parte das contas para LID (Linked ID), um
+ * identificador interno diferente do número de telefone. Quando o número do
+ * cliente está salvo nos contatos do bot, o remoteJid pode vir no formato
+ * LID (ex: 14272293818523@lid) em vez de telefone (5511999@s.whatsapp.net).
  *
- * Solução: consultar onWhatsApp() passando o número extraído.
- *  - Se retornar exists: true  → é um telefone real → gera link wa.me
- *  - Se retornar exists: false → é LID → orienta admin a buscar pelo nome
+ * Solução adotada:
+ *  1. Verifica o domínio do JID:
+ *     - @s.whatsapp.net → telefone real → wa.me gerado diretamente
+ *     - @lid            → ID interno → wa.me não é possível diretamente
+ *  2. Para JIDs @lid: tenta onWhatsApp() como último recurso.
+ *     Se falhar, orienta admin a usar o nome para encontrar o contato.
  *
- * @param {object} sock       - Socket do Baileys
- * @param {string} rawNumber  - Número extraído do JID (pode ser phone ou LID)
- * @returns {{ isPhone: boolean, phone: string|null }} resultado da verificação
+ * Obs: não usamos onWhatsApp() para JIDs @s.whatsapp.net pois o raw number
+ * já é o telefone real — a verificação era desnecessária e causava falsos
+ * negativos quando o servidor retornava resposta vazia (throttle/rede).
+ *
+ * @param {object} sock - Socket do Baileys
+ * @param {string} jid  - JID completo do cliente (ex: '5511999@s.whatsapp.net')
+ * @returns {string} URL wa.me ou string de texto descritiva
  */
-async function verificarNumeroCliente(sock, rawNumber) {
-  try {
-    const [check] = await sock.onWhatsApp(rawNumber);
-    if (check?.exists) {
-      console.log(`[BOT] ✅ Número do cliente confirmado: ${rawNumber}`);
-      return { isPhone: true, phone: rawNumber };
-    }
-    // onWhatsApp retornou exists: false → é LID ou número inválido
-    console.warn(`[BOT] ⚠️  JID "${rawNumber}" é um LID (ID interno), não um telefone.`);
-    return { isPhone: false, phone: null };
-  } catch (err) {
-    // Se a verificação falhar por timeout/rede, assume que é telefone e tenta o link mesmo assim
-    console.warn(`[BOT] ⚠️  Não foi possível verificar número do cliente (${err.message}). Usando direto.`);
-    return { isPhone: true, phone: rawNumber };
+async function resolverContatoCliente(sock, jid) {
+  const rawNumber = jid.split('@')[0];
+
+  // ── Caso 1: JID padrão @s.whatsapp.net = telefone real ────────────────────
+  if (jid.endsWith('@s.whatsapp.net')) {
+    console.log(`[BOT] 📞 Telefone do cliente: ${rawNumber}`);
+    return `📱 *WhatsApp:* https://wa.me/${rawNumber}`;
   }
+
+  // ── Caso 2: JID @lid = ID interno (contato salvo no WhatsApp) ─────────────
+  // O WhatsApp usa LIDs para contatos salvos no dispositivo.
+  // O cache é populado pelos eventos contacts.upsert / contacts.update no connection.js.
+
+  if (cacheContatosLid.has(rawNumber)) {
+    const phone = cacheContatosLid.get(rawNumber);
+    console.log(`[BOT] ✅ LID resolvido: ${rawNumber} → ${phone}`);
+    return `📱 *WhatsApp:* https://wa.me/${phone}`;
+  }
+
+  // Cache não tem este LID — contato não foi sincronizado ainda.
+  // onWhatsApp() NÃO aceita LID (exige telefone), então não há como resolver via API.
+  // Fallback: mostra o nome para o admin localizar a conversa.
+  console.warn(`[BOT] ⚠️  LID sem resolução no cache: ${rawNumber} (total cache: ${cacheContatosLid.size})`);
+
+  const nomeContato = nomeUsuario.get(jid) || null;
+  if (nomeContato) {
+    return (
+      `📱 _Contato salvo: *"${nomeContato}"*\n` +
+      `   Abra o WhatsApp do bot e toque na conversa com este nome._`
+    );
+  }
+  return `📱 _Contato salvo (LID ${rawNumber.slice(0, 8)}…) — procure na lista de conversas do bot._`;
 }
 
 /**
- * Envia notificação ao número admin quando usuário solicita consultor.
+ * Envia notificação ao admin quando o usuário solicita falar com um consultor.
  *
- * Valida se o JID do cliente contém um telefone real (via onWhatsApp) ou um LID
- * antes de montar o link wa.me, evitando links inválidos na notificação.
+ * Sempre gera link wa.me quando o JID é @s.whatsapp.net (telefone real).
+ * Para JIDs @lid (número salvo), tenta resolver antes de exibir fallback.
  *
  * @param {object} sock    - Socket do Baileys
  * @param {string} jid     - JID do usuário (ex: '5511999999999@s.whatsapp.net')
  * @param {string} nome    - Primeiro nome do usuário (pushName)
  * @param {string} assunto - Último tópico acessado pelo usuário
  */
-async function notificarConsultor(sock, jid, nome, assunto) {
-  const adminPhone = CONTENT.adminWhatsapp;
-  const rawNumber  = jid.split('@')[0]; // pode ser telefone real ou LID interno
+/**
+ * @param {string|null} consultorPhone - Número do consultor atribuído via round-robin.
+ *   Se null (CONSULTORES não configurado), usa ADMIN_WHATSAPP como fallback.
+ */
+async function notificarConsultor(sock, jid, nome, assunto, consultorPhone = null) {
+  const adminPhone = consultorPhone || CONTENT.adminWhatsapp;
 
-  console.log(`[BOT] 📤 Enviando notificação para admin (${adminPhone})...`);
+  console.log(`[BOT] 📤 Montando notificação para ${consultorPhone ? 'consultor' : 'admin'} (${adminPhone})...`);
 
-  // 1. Resolve o JID real do admin antes de enviar
+  // 1. Resolve o JID real do admin (necessário para sendMessage)
   const adminJid = await resolverJidAdmin(sock, adminPhone);
   if (!adminJid) {
     console.error(`[BOT] ❌ Notificação NÃO enviada: admin não encontrado no WhatsApp.`);
     return;
   }
 
-  // 2. Verifica se o JID do cliente é um número de telefone real ou LID interno
-  const { isPhone, phone } = await verificarNumeroCliente(sock, rawNumber);
+  // 2. Resolve contato do cliente (wa.me ou instrução textual)
+  const linhaContato = await resolverContatoCliente(sock, jid);
 
-  // 3. Monta a linha de contato do cliente dependendo do resultado
-  //    - Telefone real → link wa.me clicável
-  //    - LID → orienta admin a buscar pelo nome no WhatsApp
-  const linhaContato = isPhone
-    ? `📱 *WhatsApp:* https://wa.me/${phone}`
-    : `📱 *Nome no WhatsApp:* ${nome}\n` +
-      `_⚠️ Link direto indisponível (conta usa ID interno)._\n` +
-      `_Pesquise por "${nome}" ou peça o número diretamente._`;
-
+  // 3. Monta e envia a notificação formatada
   const notificacao =
     `🔔 *NOVO CONTATO SOLICITADO VIA BOT*\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
     `👤 *Nome:* ${nome}\n` +
     `${linhaContato}\n` +
     `🗂️  *Interesse:* ${assunto}\n\n` +
-    `💬 O cliente deseja falar com um consultor.`;
+    `💬 O cliente deseja falar com um consultor.\n` +
+    `_Toque no link acima para abrir a conversa._`;
 
   try {
     await sock.sendMessage(adminJid, { text: notificacao });
-    console.log(`[BOT] 📣 Notificação enviada → ${nome} | ${isPhone ? `wa.me/${phone}` : 'LID (sem link)'} | ${assunto}`);
+    console.log(`[BOT] 📣 Notificação enviada → ${nome} | ${jid.split('@')[0]} | ${assunto}`);
   } catch (err) {
     console.error(`[BOT] ❌ Falha ao enviar notificação ao admin: ${err.message}`);
   }
@@ -660,11 +607,13 @@ async function acionarConsultor(sock, jid) {
   const assunto = ultimoContexto.get(jid) || 'Não especificado (menu geral)';
 
   await enviarConteudo(sock, jid, textoConsultor());
-  await notificarConsultor(sock, jid, nome, assunto);
 
-  if (MODO_BOTOES) {
-    try { await sock.sendMessage(jid, botaoVoltarMenu()); } catch (_) {}
-  }
+  // ── Round-robin: atribui consultor e registra no banco ─────────────────────
+  const numero            = jid.split('@')[0];
+  const consultorAssignado = roundRobin.proximoConsultor(); // null se não configurado
+  leadService.qualificarLead(numero, consultorAssignado);
+
+  await notificarConsultor(sock, jid, nome, assunto, consultorAssignado);
 
   // Silencia o bot completamente para este JID a partir de agora.
   // O consultor humano assume a conversa — o bot não deve interferir.
@@ -768,6 +717,15 @@ async function handleMessage(sock, message) {
   const jid   = message.key.remoteJid;
   const msgId = message.key.id;
 
+  // ── Filtro de tipo de chat (MODO_ATENDIMENTO no .env) ───────────────────────
+  // Grupos têm JID terminando em @g.us; privado = @s.whatsapp.net ou @lid
+  const isGrupo   = jid.endsWith('@g.us');
+  const isPrivado = !isGrupo;
+
+  if (MODO_ATENDIMENTO === 'privado' && isGrupo)   return;
+  if (MODO_ATENDIMENTO === 'grupo'   && isPrivado) return;
+  // MODO_ATENDIMENTO === 'ambos' → não filtra nada
+
   // ── Deduplicação ────────────────────────────────────────────────────────────
   // Evita processar a mesma mensagem duas vezes (ex: reconexão que re-entrega eventos)
   if (processedIds.has(msgId)) return;
@@ -827,6 +785,13 @@ async function handleMessage(sock, message) {
       limparColecaoSeNecessario(usuariosConhecidos);
     }
     const nome = nomeUsuario.get(jid) || null;
+
+    // ── Registro de lead no banco (primeiro contato) ───────────────────────────
+    // Chama upsertLead somente antes de adicionar ao Set usuariosConhecidos.
+    // Após o primeiro contato, o lead já existe no banco e upsertLead não duplica.
+    if (!usuariosConhecidos.has(jid)) {
+      leadService.upsertLead(jid.split('@')[0], nome);
+    }
 
     // ── Clique em botão (modo Business) ───────────────────────────────────────
     const buttonId = extractButtonId(message);
@@ -898,6 +863,40 @@ async function handleMessage(sock, message) {
 }
 
 // ────────────────────────────────────────────────────────────
+//  Encerramento de sessão pelo usuário
+// ────────────────────────────────────────────────────────────
+
+/**
+ * Encerra a sessão do usuário por iniciativa própria (botão "Finalizar" ou opção "8").
+ * Envia mensagem de despedida, limpa todo o estado e cancela o timer de inatividade.
+ * A próxima mensagem deste usuário será tratada como primeiro contato (boas-vindas novamente).
+ */
+async function encerrarSessaoAtiva(sock, jid) {
+  const nome = nomeUsuario.get(jid) || null;
+  const despedida =
+    `✅ Atendimento encerrado${nome ? `, *${nome}*` : ''}!\n\n` +
+    `Obrigado por entrar em contato com a *Integra Psicanálise*. 😊\n` +
+    `Quando precisar de mais informações, é só chamar! 🌱`;
+
+  await simularDigitando(sock, jid, despedida);
+  await sock.sendMessage(jid, { text: despedida });
+
+  // Limpa todo o estado do usuário — próxima mensagem recebe boas-vindas novamente
+  usuariosConhecidos.delete(jid);
+  ultimoContexto.delete(jid);
+  nomeUsuario.delete(jid);
+  avisadoForaHorario.delete(jid);
+
+  // Cancela timer de inatividade (sessão encerrada voluntariamente)
+  if (sessionTimers.has(jid)) {
+    clearTimeout(sessionTimers.get(jid));
+    sessionTimers.delete(jid);
+  }
+
+  console.log(`[BOT] ✅ Sessão encerrada pelo usuário: ${jid.split('@')[0]}`);
+}
+
+// ────────────────────────────────────────────────────────────
 //  Processador de botões (modo Business + legado)
 // ────────────────────────────────────────────────────────────
 
@@ -908,10 +907,12 @@ async function handleMessage(sock, message) {
 async function processarBotao(sock, jid, id) {
   if (id === 'btn_menu')      return await enviarMenuPrincipal(sock, jid);
   if (id === 'btn_consultor') return await acionarConsultor(sock, jid);
+  if (id === 'btn_finalizar') return await encerrarSessaoAtiva(sock, jid);
 
   const rota = ROTAS_BOTAO[id];
   if (rota) {
     ultimoContexto.set(jid, rota.ctx);
+    leadService.updateInteresse(jid.split('@')[0], rota.ctx);
     return await enviarConteudo(sock, jid, rota.fn());
   }
 
@@ -939,11 +940,15 @@ async function processarTexto(sock, jid, texto) {
   if (ROTAS_TEXTO[texto]) {
     const { ctx, fn } = ROTAS_TEXTO[texto];
     ultimoContexto.set(jid, ctx);
+    leadService.updateInteresse(jid.split('@')[0], ctx);
     return await enviarConteudo(sock, jid, fn());
   }
 
   // ── Opção 7 → consultor ────────────────────────────────────────────────────
   if (texto === '7') return await acionarConsultor(sock, jid);
+
+  // ── Opção 8 → finalizar ────────────────────────────────────────────────────
+  if (texto === '8') return await encerrarSessaoAtiva(sock, jid);
 
   // ── Agradecimentos ─────────────────────────────────────────────────────────
   const termosAgradecimento = [
@@ -965,6 +970,7 @@ async function processarTexto(sock, jid, texto) {
   if (['sobre', 'história', 'historia', 'missão', 'missao', 'proposta',
        'diferencial', 'escola', 'o que é', 'quem são', 'o que e'].some(k => texto.includes(k))) {
     ultimoContexto.set(jid, 'Sobre a Integra Psicanálise');
+    leadService.updateInteresse(jid.split('@')[0], 'Sobre a Integra Psicanálise');
     return await enviarConteudo(sock, jid, textoSobre());
   }
 
@@ -972,12 +978,14 @@ async function processarTexto(sock, jid, texto) {
   if (['módulo', 'modulo', 'formação', 'formacao', 'disciplina', 'curso',
        'grade', 'aula', 'conteúdo', 'conteudo', 'aprender', 'duração', 'duracao'].some(k => texto.includes(k))) {
     ultimoContexto.set(jid, 'Formação e Módulos');
+    leadService.updateInteresse(jid.split('@')[0], 'Formação e Módulos');
     return await enviarConteudo(sock, jid, textoFormacao());
   }
 
   // Equipe Docente
   if (['professor', 'docente', 'equipe', 'instrutor', 'quem ensina', 'corpo docente'].some(k => texto.includes(k))) {
     ultimoContexto.set(jid, 'Equipe Docente');
+    leadService.updateInteresse(jid.split('@')[0], 'Equipe Docente');
     return await enviarConteudo(sock, jid, textoDocente());
   }
 
@@ -985,13 +993,16 @@ async function processarTexto(sock, jid, texto) {
   if (['valor', 'preço', 'preco', 'custo', 'mensalidade', 'matrícula', 'matricula',
        'pagamento', 'boleto', 'pix', 'quanto', 'desconto', 'benefício', 'beneficio', 'parcela'].some(k => texto.includes(k))) {
     ultimoContexto.set(jid, 'Condições e Benefícios');
+    leadService.updateInteresse(jid.split('@')[0], 'Condições e Benefícios');
     return await enviarConteudo(sock, jid, textoCondicoes());
   }
 
   // Unidade e Localização
   if (['endereço', 'endereco', 'onde fica', 'unidade', 'sede', 'recife',
+       'caruaru', 'campina', 'joão pessoa', 'joao pessoa', 'nordeste',
        'como chegar', 'mapa', 'rua', 'localização', 'localizacao', 'fica'].some(k => texto.includes(k))) {
     ultimoContexto.set(jid, 'Unidade e Localização');
+    leadService.updateInteresse(jid.split('@')[0], 'Unidade e Localização');
     return await enviarConteudo(sock, jid, textoUnidade());
   }
 
@@ -999,6 +1010,7 @@ async function processarTexto(sock, jid, texto) {
   if (['contato', 'ligar', 'email', 'instagram', 'agendar', 'visita',
        'inscrever', 'inscrição', 'inscricao', 'telefone', 'site'].some(k => texto.includes(k))) {
     ultimoContexto.set(jid, 'Contato / Agendamento');
+    leadService.updateInteresse(jid.split('@')[0], 'Contato / Agendamento');
     return await enviarConteudo(sock, jid, textoContato());
   }
 
@@ -1012,4 +1024,4 @@ async function processarTexto(sock, jid, texto) {
   await enviarFallback(sock, jid);
 }
 
-module.exports = { handleMessage, verificarAdmin };
+module.exports = { handleMessage, verificarAdmin, atualizarCacheContatos };

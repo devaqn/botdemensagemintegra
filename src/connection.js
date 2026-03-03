@@ -31,6 +31,8 @@
 
 'use strict';
 
+const fs = require('fs');
+
 const {
   default: makeWASocket,        // função principal: cria o socket WhatsApp
   useMultiFileAuthState,        // carrega/salva sessão em múltiplos arquivos
@@ -41,7 +43,7 @@ const {
 
 const pino   = require('pino');            // logger de alta performance (usado internamente)
 const qrcode = require('qrcode-terminal'); // renderiza QR code ASCII no terminal
-const { handleMessage, verificarAdmin } = require('./messageHandler'); // lógica de resposta
+const { handleMessage, verificarAdmin, atualizarCacheContatos } = require('./messageHandler'); // lógica de resposta
 
 // ────────────────────────────────────────────────────────────
 //  Configurações de produção
@@ -242,9 +244,15 @@ async function startConnection() {
       const loggedOut = statusCode === DisconnectReason.loggedOut;
 
       if (loggedOut) {
-        log('erro', 'Sessão expirada ou removida pelo usuário no celular.');
-        log('info', `Delete a pasta "${AUTH_FOLDER}" e reinicie o bot para re-autenticar com novo QR.`);
-        process.exit(1); // PM2 vai reiniciar e um novo QR code será exibido
+        log('erro', 'Sessao expirada ou removida pelo usuario no celular.');
+        log('info', 'Apagando pasta de autenticacao automaticamente...');
+        try {
+          fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
+          log('ok', `Pasta "${AUTH_FOLDER}" removida. Reiniciando para novo QR code...`);
+        } catch (e) {
+          log('warn', `Nao foi possivel remover "${AUTH_FOLDER}": ${e.message}`);
+        }
+        process.exit(1); // PM2 reinicia → QR code novo gerado automaticamente
       }
 
       // [FIX 3] Não tenta reconectar se estamos em processo de shutdown intencional
@@ -293,10 +301,24 @@ async function startConnection() {
   // ────────────────────────────────────────────────────────────
   //  Evento: salva credenciais ao atualizar
   // ────────────────────────────────────────────────────────────
-  // Disparado pelo Baileys quando tokens/chaves de sessão precisam ser persistidos
-  // (ex: após rotação de chave do Signal Protocol, atualização de pre-keys, etc.).
-  // Sem este handler, a sessão seria perdida ao reiniciar o processo.
   sock.ev.on('creds.update', saveCreds);
+
+  // ────────────────────────────────────────────────────────────
+  //  Evento: atualização de contatos (popula cache LID → telefone)
+  // ────────────────────────────────────────────────────────────
+  // O WhatsApp usa LIDs (Linked IDs) para contatos salvos no dispositivo.
+  // Quando o Baileys recebe informações de contatos, registramos o mapeamento
+  // LID → número de telefone para que as notificações ao admin tenham o link wa.me correto.
+  // contacts.upsert → sincronização inicial e novos contatos
+  sock.ev.on('contacts.upsert', (contacts) => {
+    atualizarCacheContatos(contacts);
+  });
+
+  // contacts.update → contatos já existentes que tiveram dados atualizados
+  // (inclui o momento em que o WhatsApp atribui/atualiza o LID de um contato)
+  sock.ev.on('contacts.update', (updates) => {
+    atualizarCacheContatos(updates);
+  });
 
   // ────────────────────────────────────────────────────────────
   //  Evento: novas mensagens recebidas

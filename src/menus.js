@@ -5,11 +5,10 @@
  *  Este arquivo contém APENAS funções que montam strings de texto.
  *  Não há lógica de negócio aqui — só formatação de mensagens.
  *
- *  ⚠️  Por que não usamos buttonsMessage/listMessage aqui?
- *  Porque esses tipos NÃO renderizam botões em contas pessoais do
- *  WhatsApp. Apenas contas Business API oficial suportam botões com
- *  confiabilidade. Os botões são gerenciados pelo messageHandler.js,
- *  que detecta automaticamente se o número é Business ou pessoal.
+ *  Modo de operação:
+ *   - Baileys (padrão): navegação por número digitado (1–8, 0)
+ *   - Cloud API (USE_CLOUD_API=true): botões interativos via cloudApi.js
+ *     Os IDs dos botões são tratados em messageHandler.js (ROTAS_BOTAO)
  *
  *  Formatação WhatsApp suportada nas strings:
  *    *texto*    → negrito
@@ -54,11 +53,13 @@ function mensagemBoasVindas(nome, tipo = 'geral') {
   const nomePart = nome ? `, *${nome}*` : ''; // ex: ", *Maria*" ou "" (sem nome)
 
   return (
-    `${saud}${nomePart}! 👋 Seja muito bem-vindo(a) à\n` +
-    `*Integra Psicanálise — A Nova Escola*! 🌱\n\n` +
-    `Formamos psicanalistas com *rigor teórico*, *sensibilidade clínica* ` +
-    `e *visão plural*, integrando as grandes escolas da psicanálise.\n\n` +
-    `Como posso ajudá-lo(a) hoje?`
+    `${saud}${nomePart}! 👋\n\n` +
+    `Seja bem-vindo(a) à\n` +
+    `*Integra Psicanálise — A Nova Escola* 🌱\n\n` +
+    `_"A única escola que integra todas as correntes psicanalíticas."_\n\n` +
+    `Formamos psicanalistas com *rigor teórico*, *sensibilidade clínica* e *visão plural* ` +
+    `— de Freud a Lacan, de Klein a Winnicott.\n\n` +
+    `Como posso ajudá-lo(a)?`
   );
 }
 
@@ -94,19 +95,21 @@ function saudacaoCurta(nome, tipo) {
  */
 function menuPrincipal() {
   return (
-    `╔══════════════════════════════╗\n` +
-    `   🧠 *INTEGRA PSICANÁLISE*\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `🧠 *INTEGRA PSICANÁLISE*\n` +
     `   _A Nova Escola_\n` +
-    `╚══════════════════════════════╝\n\n` +
-    `Selecione uma opção *digitando o número*:\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `No que posso ajudá-lo(a)?\n\n` +
     `*1* 🏛️  Sobre a Integra\n` +
     `*2* 📚  Formação e Módulos\n` +
     `*3* 👨‍🏫  Equipe Docente\n` +
     `*4* 💰  Condições e Benefícios\n` +
-    `*5* 📍  Unidade e Localização\n` +
+    `*5* 📍  Unidades e Localização\n` +
     `*6* 📞  Contato / Agendamento\n\n` +
-    `*7* 👩‍💼  Falar com Consultor\n\n` +
-    `_Digite o número da opção desejada_ 👆`
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `*7* 👩‍💼  Falar com um Consultor\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `_Digite o número desejado_ 👆`
   );
 }
 
@@ -122,7 +125,8 @@ function rodapeNavegacao() {
     `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
     `O que mais posso fazer por você?\n\n` +
     `*0*  ↩️  Voltar ao menu\n` +
-    `*7*  👩‍💼  Falar com consultor`
+    `*7*  👩‍💼  Falar com consultor\n` +
+    `*8*  ✅  Finalizar atendimento`
   );
 }
 
@@ -152,8 +156,13 @@ function textoSobre() {
     `🏛️  *SOBRE A INTEGRA PSICANÁLISE*\n` +
     `_A Nova Escola_\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `_"${CONTENT.instituicao.diferencial}"_\n\n` + // citação do diferencial em itálico
+    `_"${CONTENT.instituicao.diferencial}"_\n\n` +
     `${CONTENT.instituicao.missao}\n\n` +
+    `📊 *Nossos números:*\n` +
+    `  • *5* módulos progressivos\n` +
+    `  • *27* disciplinas\n` +
+    `  • *1.500h* certificadas\n` +
+    `  • *4* unidades no Nordeste\n\n` +
     `*Nossos pilares:*\n${pilares}\n\n` +
     `*Abordagens integradas:*\n${abord}` +
     rodapeNavegacao()
@@ -176,10 +185,12 @@ function textoFormacao() {
 
   return (
     `📚 *FORMAÇÃO E MÓDULOS*\n` +
-    `_25 Disciplinas em 5 Módulos Progressivos_\n` +
+    `_27 Disciplinas · 5 Módulos · 1.500h Certificadas_\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `⏱️ Duração: *2 anos e meio* (presencial)\n\n` +
     modulosTxt +
-    `\n\n_Cada módulo inclui material didático e práticas terapêuticas._` +
+    `\n\n_Cada módulo inclui material didático e práticas terapêuticas._\n` +
+    `_Estágio supervisionado a partir do Módulo III._` +
     rodapeNavegacao()
   );
 }
@@ -255,15 +266,20 @@ function textoCondicoes() {
 function textoUnidade() {
   const u = CONTENT.unidade; // objeto com dados da sede (content.js)
   return (
-    `📍 *UNIDADE E LOCALIZAÇÃO*\n` +
-    `_${u.nome}_\n` +
+    `📍 *UNIDADES E LOCALIZAÇÃO*\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `🏢 *Endereço:*\n${u.endereco}\n${u.cidade}\n\n` +
-    `🏛️  *Estrutura:*\n_${u.estrutura}_\n\n` +
-    `📞 *Telefone / WhatsApp:*\n${u.telefone}\n` +
-    `📱 https://wa.me/${u.whatsapp}\n\n` +   // link clicável para abrir chat
-    `🗺️  *Como chegar:*\n${u.maps}\n\n` +    // link do Google Maps
-    `_Visitas podem ser agendadas pelo WhatsApp._` +
+    `⭐ *${u.nome}* _(Sede Principal)_\n` +
+    `🏢 ${u.endereco}, ${u.cidade}\n` +
+    `📞 ${u.telefone}\n` +
+    `📱 https://wa.me/${u.whatsapp}\n` +
+    `🗺️  ${u.maps}\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `📌 *Outras unidades:*\n` +
+    `  • Caruaru, PE\n` +
+    `  • Campina Grande, PB\n` +
+    `  • João Pessoa, PB\n\n` +
+    `🏛️  *Estrutura da sede:*\n_${u.estrutura}_\n\n` +
+    `_Visitas e agendamentos pelo WhatsApp._` +
     rodapeNavegacao()
   );
 }
@@ -359,8 +375,7 @@ function textoFallback() {
 module.exports = {
   mensagemBoasVindas,  // 1ª mensagem (boas-vindas completas)
   saudacaoCurta,       // saudação curta (usuário recorrente)
-  menuPrincipal,       // menu numerado em texto (modo pessoal)
-  rodapeNavegacao,     // rodapé "0 = menu | 7 = consultor"
+  menuPrincipal,       // menu numerado em texto
   textoSobre,          // seção 1 — Sobre a Integra
   textoFormacao,       // seção 2 — Formação e Módulos
   textoDocente,        // seção 3 — Equipe Docente

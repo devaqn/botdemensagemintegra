@@ -12,6 +12,12 @@ logs/
 *.log
 npm-debug.log*
 
+# Cache interno
+lid-cache.json
+
+# Claude Code
+.claude/
+
 # Sistema operacional
 .DS_Store
 Thumbs.db
