@@ -57,6 +57,31 @@ NODE_ENV=production
 
 ---
 
+## Google Sheets (Leads)
+
+O projeto ja envia eventos de lead para Google Sheets via `services/googleSheetsService.js`.
+
+### Configuracao rapida
+```env
+GOOGLE_SERVICE_ACCOUNT_EMAIL=bot@projeto.iam.gserviceaccount.com
+GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+
+# Opcao 1: usar planilha existente
+GOOGLE_SHEETS_ID=1abc...xyz
+GOOGLE_SHEETS_TAB=Leads
+
+# Opcao 2: auto-criar planilha (se GOOGLE_SHEETS_ID vazio)
+GOOGLE_SHEETS_AUTO_CREATE=true
+GOOGLE_SHEETS_TITLE=Integra Leads
+```
+
+### Importante
+- Compartilhe a planilha com o `GOOGLE_SERVICE_ACCOUNT_EMAIL` como Editor.
+- Ative a API Google Sheets no projeto GCP da conta de servico.
+- Quando `GOOGLE_SHEETS_AUTO_CREATE=true`, o bot salva o ID criado em `data/google-sheets-config.json`.
+
+---
+
 ## Como rodar
 
 ### Modo desenvolvimento (reinicia ao salvar)

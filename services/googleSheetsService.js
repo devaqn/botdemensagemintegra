@@ -1,160 +1,285 @@
 /**
  * =============================================================
- *  services/googleSheetsService.js — Integração Google Sheets
+ *  services/googleSheetsService.js - Google Sheets integration
  * =============================================================
- *  Registra eventos comerciais em uma planilha Google Sheets
- *  em tempo real, de forma assíncrona e não-bloqueante.
+ *  Commercial events are appended to a Google Sheet asynchronously.
  *
- *  Configuração no .env:
- *    GOOGLE_SHEETS_ID=1abc...xyz
- *    GOOGLE_SHEETS_TAB=Leads
- *    GOOGLE_SERVICE_ACCOUNT_EMAIL=bot@projeto.iam.gserviceaccount.com
- *    GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+ *  Supports two modes:
+ *   1) Existing sheet: set GOOGLE_SHEETS_ID in .env
+ *   2) Auto-create: leave GOOGLE_SHEETS_ID empty and set
+ *      GOOGLE_SHEETS_AUTO_CREATE=true
  *
- *  Como configurar a conta de serviço:
- *    1. Acesse console.cloud.google.com → APIs & Services → Credentials
- *    2. Create Credentials → Service Account
- *    3. Baixe o JSON da chave → copie client_email e private_key para o .env
- *    4. No Google Sheets → Compartilhar → adicione o client_email com permissão de Editor
- *    5. Ative a API "Google Sheets API" no Console
- *
- *  Estrutura da planilha (9 colunas, linha 1 = cabeçalho):
- *    A: data_evento | B: nome_lead | C: numero_whatsapp | D: curso_interesse
- *    E: status_atual | F: responsavel | G: tempo_primeira_resposta
- *    H: tipo_evento | I: mensagem_resumo
- *
- *  Robustez:
- *   - Retry automático (até 3 tentativas, intervalo de 3s)
- *   - Erros são logados em data/sheets-errors.log
- *   - Falha na planilha NUNCA derruba o bot
- *   - Se credenciais não configuradas → ignora silenciosamente
+ *  Notes:
+ *   - Bot keeps running even if Sheets fails.
+ *   - Errors are logged to data/sheets-errors.log.
+ *   - If auto-created, spreadsheetId is cached in
+ *     data/google-sheets-config.json.
  * =============================================================
  */
 
 'use strict';
 
-const fs   = require('fs');
+const fs = require('fs');
 const path = require('path');
 
-const LOG_FILE = path.join(__dirname, '..', 'data', 'sheets-errors.log');
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const LOG_FILE = path.join(DATA_DIR, 'sheets-errors.log');
+const CACHE_FILE = path.join(DATA_DIR, 'google-sheets-config.json');
 
-// ────────────────────────────────────────────────────────────
-//  Utilitários internos
-// ────────────────────────────────────────────────────────────
+const HEADER_ROW = [
+  'data_evento',
+  'nome_lead',
+  'numero_whatsapp',
+  'curso_interesse',
+  'status_atual',
+  'responsavel',
+  'tempo_primeira_resposta',
+  'tipo_evento',
+  'mensagem_resumo',
+];
 
-/**
- * Registra erro de integração em arquivo local.
- * Não lança exceção.
- */
-function _logError(mensagem) {
-  const linha = `[${new Date().toISOString()}] ${mensagem}\n`;
-  try {
-    const dir = path.dirname(LOG_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(LOG_FILE, linha);
-  } catch (_) {}
-  console.error('[SHEETS] ❌', mensagem);
+let contextPromise = null;
+let warnedMissingConfig = false;
+
+function _ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-/**
- * Verifica se as credenciais do Google estão configuradas no .env.
- * @returns {boolean}
- */
-function _isConfigured() {
+function _logError(message) {
+  const line = `[${new Date().toISOString()}] ${message}\n`;
+  try {
+    _ensureDataDir();
+    fs.appendFileSync(LOG_FILE, line);
+  } catch (_) {}
+  console.error('[SHEETS] ERROR', message);
+}
+
+function _logInfo(message) {
+  console.log('[SHEETS]', message);
+}
+
+function _hasCredentials() {
   return !!(
-    process.env.GOOGLE_SHEETS_ID             &&
     process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL &&
     process.env.GOOGLE_PRIVATE_KEY
   );
 }
 
-/**
- * Formata data/hora atual no padrão brasileiro (horário de Brasília).
- * @returns {string} Ex: '03/03/2026 14:35:22'
- */
-function _formatarDataBR() {
+function _autoCreateEnabled() {
+  return String(process.env.GOOGLE_SHEETS_AUTO_CREATE || '').toLowerCase() === 'true';
+}
+
+function _getTabName() {
+  return (process.env.GOOGLE_SHEETS_TAB || 'Leads').trim() || 'Leads';
+}
+
+function _getEnvSpreadsheetId() {
+  const id = String(process.env.GOOGLE_SHEETS_ID || '').trim();
+  return id || null;
+}
+
+function _loadCachedSpreadsheetId() {
+  try {
+    const raw = fs.readFileSync(CACHE_FILE, 'utf8');
+    const json = JSON.parse(raw);
+    if (typeof json.spreadsheetId === 'string' && json.spreadsheetId.trim()) {
+      return json.spreadsheetId.trim();
+    }
+  } catch (_) {}
+  return null;
+}
+
+function _saveCachedSpreadsheetId(spreadsheetId, tabName) {
+  try {
+    _ensureDataDir();
+    fs.writeFileSync(
+      CACHE_FILE,
+      JSON.stringify(
+        {
+          spreadsheetId,
+          tabName,
+          createdAt: new Date().toISOString(),
+        },
+        null,
+        2
+      )
+    );
+  } catch (err) {
+    _logError(`Failed to save sheets cache: ${err.message}`);
+  }
+}
+
+function _formatDateBR() {
   return new Intl.DateTimeFormat('pt-BR', {
     timeZone: 'America/Sao_Paulo',
-    day:      '2-digit',
-    month:    '2-digit',
-    year:     'numeric',
-    hour:     '2-digit',
-    minute:   '2-digit',
-    second:   '2-digit',
-    hour12:   false,
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
   }).format(new Date()).replace(',', '');
 }
 
-// ────────────────────────────────────────────────────────────
-//  API pública
-// ────────────────────────────────────────────────────────────
+async function _createSpreadsheet(sheets, tabName) {
+  const titleBase = (process.env.GOOGLE_SHEETS_TITLE || 'Integra Leads').trim() || 'Integra Leads';
+  const title = `${titleBase} ${new Date().toISOString().slice(0, 10)}`;
 
-/**
- * Adiciona uma linha ao final da aba configurada em GOOGLE_SHEETS_TAB.
- *
- * Sempre usa append (nunca sobrescreve linhas existentes).
- * Tem retry automático (até 3 tentativas).
- * Nunca lança exceção para o chamador.
- *
- * @param {object} data
- * @param {string} data.tipo_evento             - Ex: 'novo_lead', 'lead_atribuido'
- * @param {string} data.nome_lead
- * @param {string} data.numero_whatsapp
- * @param {string} data.curso_interesse
- * @param {string} data.status_atual
- * @param {string} data.responsavel
- * @param {string} data.tempo_primeira_resposta - Ex: '5 min'
- * @param {string} data.mensagem_resumo
- * @param {number} [_tentativa=1]               - Uso interno para retry
- */
-async function appendToSheet(data, _tentativa = 1) {
-  if (!_isConfigured()) return; // credenciais não configuradas → ignora
+  const res = await sheets.spreadsheets.create({
+    requestBody: {
+      properties: { title },
+      sheets: [{ properties: { title: tabName } }],
+    },
+  });
+
+  const spreadsheetId = res?.data?.spreadsheetId;
+  if (!spreadsheetId) {
+    throw new Error('Spreadsheet created without spreadsheetId.');
+  }
+
+  _saveCachedSpreadsheetId(spreadsheetId, tabName);
+  _logInfo(`Spreadsheet auto-created: ${spreadsheetId} (title: ${title})`);
+  return spreadsheetId;
+}
+
+async function _loadSpreadsheetMeta(sheets, spreadsheetId) {
+  const res = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: 'spreadsheetId,sheets(properties(title))',
+  });
+  return res.data || {};
+}
+
+async function _ensureTabExists(sheets, spreadsheetId, tabName) {
+  const meta = await _loadSpreadsheetMeta(sheets, spreadsheetId);
+  const tabs = Array.isArray(meta.sheets) ? meta.sheets : [];
+  const hasTab = tabs.some((s) => s?.properties?.title === tabName);
+
+  if (hasTab) return;
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [{ addSheet: { properties: { title: tabName } } }],
+    },
+  });
+
+  _logInfo(`Tab created: ${tabName} (spreadsheet: ${spreadsheetId})`);
+}
+
+async function _ensureHeaderRow(sheets, spreadsheetId, tabName) {
+  const range = `${tabName}!A1:I1`;
+  const current = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+  const row = current?.data?.values?.[0] || [];
+
+  if (row.length > 0) return;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range,
+    valueInputOption: 'RAW',
+    requestBody: { values: [HEADER_ROW] },
+  });
+
+  _logInfo(`Header row initialized on ${tabName}.`);
+}
+
+async function _initContext() {
+  if (!_hasCredentials()) return null;
+
+  const { google } = require('googleapis');
+
+  const auth = new google.auth.GoogleAuth({
+    credentials: {
+      client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      private_key: (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+    },
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
+
+  const sheets = google.sheets({ version: 'v4', auth });
+  const tabName = _getTabName();
+
+  let spreadsheetId = _getEnvSpreadsheetId() || _loadCachedSpreadsheetId();
+
+  if (!spreadsheetId && _autoCreateEnabled()) {
+    spreadsheetId = await _createSpreadsheet(sheets, tabName);
+  }
+
+  if (!spreadsheetId) {
+    if (!warnedMissingConfig) {
+      warnedMissingConfig = true;
+      _logInfo(
+        'Google Sheets disabled: set GOOGLE_SHEETS_ID or enable GOOGLE_SHEETS_AUTO_CREATE=true.'
+      );
+    }
+    return null;
+  }
+
+  await _ensureTabExists(sheets, spreadsheetId, tabName);
+  await _ensureHeaderRow(sheets, spreadsheetId, tabName);
+
+  return { sheets, spreadsheetId, tabName };
+}
+
+async function _getContext() {
+  if (!contextPromise) contextPromise = _initContext();
 
   try {
-    const { google } = require('googleapis');
+    return await contextPromise;
+  } catch (err) {
+    contextPromise = null;
+    throw err;
+  }
+}
 
-    const auth = new google.auth.GoogleAuth({
-      credentials: {
-        client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-        // O .env armazena \n literal — precisa converter para newline real
-        private_key:  (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-      },
-      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-    });
+function _buildRow(data) {
+  return [[
+    _formatDateBR(),
+    data.nome_lead || '',
+    data.numero_whatsapp || '',
+    data.curso_interesse || '',
+    data.status_atual || '',
+    data.responsavel || '',
+    data.tempo_primeira_resposta || '',
+    data.tipo_evento || '',
+    data.mensagem_resumo || '',
+  ]];
+}
 
-    const sheets  = google.sheets({ version: 'v4', auth });
-    const tabName = process.env.GOOGLE_SHEETS_TAB || 'Leads';
-    const sheetId = process.env.GOOGLE_SHEETS_ID;
+/**
+ * Appends one event row to Google Sheets.
+ * Never throws to caller.
+ *
+ * @param {object} data
+ * @param {number} [_attempt=1]
+ */
+async function appendToSheet(data, _attempt = 1) {
+  if (!_hasCredentials()) return;
 
-    const linha = [[
-      _formatarDataBR(),                       // A: data_evento
-      data.nome_lead               || '',      // B: nome_lead
-      data.numero_whatsapp         || '',      // C: numero_whatsapp
-      data.curso_interesse         || '',      // D: curso_interesse
-      data.status_atual            || '',      // E: status_atual
-      data.responsavel             || '',      // F: responsavel
-      data.tempo_primeira_resposta || '',      // G: tempo_primeira_resposta
-      data.tipo_evento             || '',      // H: tipo_evento
-      data.mensagem_resumo         || '',      // I: mensagem_resumo
-    ]];
+  try {
+    const ctx = await _getContext();
+    if (!ctx) return;
+
+    const { sheets, spreadsheetId, tabName } = ctx;
 
     await sheets.spreadsheets.values.append({
-      spreadsheetId:    sheetId,
-      range:            `${tabName}!A:I`,
+      spreadsheetId,
+      range: `${tabName}!A:I`,
       valueInputOption: 'USER_ENTERED',
-      requestBody:      { values: linha },
+      requestBody: { values: _buildRow(data) },
     });
-
   } catch (err) {
-    _logError(`appendToSheet tentativa ${_tentativa}: ${err.message}`);
+    _logError(`appendToSheet attempt ${_attempt}: ${err.message}`);
+    contextPromise = null;
 
-    // Retry simples: até 3 tentativas com 3s de intervalo
-    if (_tentativa < 3) {
+    if (_attempt < 3) {
       await new Promise((r) => setTimeout(r, 3_000));
-      return appendToSheet(data, _tentativa + 1);
+      return appendToSheet(data, _attempt + 1);
     }
 
-    _logError(`appendToSheet falhou definitivamente após 3 tentativas. Dado perdido: ${JSON.stringify(data)}`);
+    _logError(`appendToSheet failed permanently after 3 attempts. Lost row: ${JSON.stringify(data)}`);
   }
 }
 
