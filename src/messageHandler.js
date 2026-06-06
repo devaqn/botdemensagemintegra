@@ -20,10 +20,8 @@
 
 'use strict';
 
-require('dotenv').config(); // carrega variáveis do .env
-
-const fs     = require('fs');
-const path   = require('path');
+const fs   = require('fs');
+const path = require('path');
 const CONTENT = require('./content');
 
 // ── Serviços de gestão comercial ─────────────────────────────
@@ -62,13 +60,16 @@ try {
   console.log(`[BOT] 📂 Cache LID carregado: ${cacheContatosLid.size} entradas`);
 } catch (_) { /* arquivo inexistente na primeira execução */ }
 
-/** Persiste o cache em disco (chamado após novas entradas). */
+/** Persiste o cache em disco de forma assíncrona com debounce de 5s. */
+let _lidCacheDebounce = null;
 function salvarCacheLid() {
-  try {
-    fs.writeFileSync(LID_CACHE_FILE, JSON.stringify(Object.fromEntries(cacheContatosLid), null, 2));
-  } catch (e) {
-    console.error('[BOT] ❌ Erro ao salvar cache LID:', e.message);
-  }
+  if (_lidCacheDebounce) clearTimeout(_lidCacheDebounce);
+  _lidCacheDebounce = setTimeout(() => {
+    const data = JSON.stringify(Object.fromEntries(cacheContatosLid), null, 2);
+    fs.writeFile(LID_CACHE_FILE, data, (err) => {
+      if (err) console.error('[BOT] ❌ Erro ao salvar cache LID:', err.message);
+    });
+  }, 5_000);
 }
 
 /**
@@ -119,20 +120,25 @@ const processedIds = new Set();
 
 /**
  * JIDs que foram transferidos para o consultor humano.
- * Após entrar neste Set, o bot silencia COMPLETAMENTE para este número:
- *  - Não responde nenhuma mensagem
- *  - Não marca como lida (não aparece como "visto")
- *  - O consultor assume a conversa diretamente pelo WhatsApp
- * O Set é limpo apenas ao reiniciar o bot (comportamento intencional).
+ * Mapeia jid → timestamp de ativação. Entradas com mais de 7 dias são
+ * removidas automaticamente a cada hora para evitar crescimento ilimitado.
  */
-const consultorAtivado = new Set();
+const CONSULTOR_ATIVADO_TTL = 7 * 24 * 60 * 60 * 1_000;
+const consultorAtivado = new Map(); // jid → timestamp
 
-/**
- * JIDs que já receberam o aviso de "fora do horário" nesta sessão.
- * Evita enviar a mesma mensagem repetidamente para quem manda várias
- * mensagens fora do horário. Ao reiniciar o bot, o Set é zerado.
- */
-const avisadoForaHorario = new Set();
+/** Retorna true se o JID ainda está no período de silêncio do consultor. */
+function consultorAtivadoAtivo(jid) {
+  if (!consultorAtivado.has(jid)) return false;
+  return (Date.now() - consultorAtivado.get(jid)) < CONSULTOR_ATIVADO_TTL;
+}
+
+// Limpeza periódica de entradas expiradas (a cada hora)
+setInterval(() => {
+  const limite = Date.now() - CONSULTOR_ATIVADO_TTL;
+  for (const [jid, ts] of consultorAtivado) {
+    if (ts < limite) consultorAtivado.delete(jid);
+  }
+}, 60 * 60 * 1_000).unref();
 
 /**
  * Lock por JID — previne race condition quando o usuário envia várias mensagens
@@ -618,7 +624,7 @@ async function acionarConsultor(sock, jid) {
   // Silencia o bot completamente para este JID a partir de agora.
   // O consultor humano assume a conversa — o bot não deve interferir.
   // Mensagens futuras deste número serão ignoradas (sem leitura, sem resposta).
-  consultorAtivado.add(jid);
+  consultorAtivado.set(jid, Date.now());
 
   // Cancela o timer de inatividade: o consultor conduz a conversa,
   // não faz sentido o bot enviar mensagem de "sessão encerrada" enquanto
@@ -664,7 +670,7 @@ function agendarEncerramentoSessao(sock, jid) {
 
     // Captura o nome ANTES de limpar o estado
     const nome        = nomeUsuario.get(jid);
-    const usuarioAtivo = usuariosConhecidos.has(jid) && !consultorAtivado.has(jid);
+    const usuarioAtivo = usuariosConhecidos.has(jid) && !consultorAtivadoAtivo(jid);
 
     // ── Limpa TODO o estado deste JID ───────────────────────────────────────
     // Feito ANTES do sendMessage para evitar inconsistências caso o envio
@@ -672,7 +678,6 @@ function agendarEncerramentoSessao(sock, jid) {
     usuariosConhecidos.delete(jid);
     ultimoContexto.delete(jid);
     nomeUsuario.delete(jid);
-    avisadoForaHorario.delete(jid);
     // (consultorAtivado NÃO é limpo: o consultor pode continuar a conversa)
 
     // ── Envia mensagem de encerramento (apenas se a sessão estava ativa) ────
@@ -714,8 +719,10 @@ function agendarEncerramentoSessao(sock, jid) {
  * 10. Outro texto → processarTexto()
  */
 async function handleMessage(sock, message) {
-  const jid   = message.key.remoteJid;
-  const msgId = message.key.id;
+  const jid   = message.key?.remoteJid;
+  const msgId = message.key?.id;
+
+  if (!jid || !msgId) return;
 
   // ── Filtro de tipo de chat (MODO_ATENDIMENTO no .env) ───────────────────────
   // Grupos têm JID terminando em @g.us; privado = @s.whatsapp.net ou @lid
@@ -731,20 +738,14 @@ async function handleMessage(sock, message) {
   if (processedIds.has(msgId)) return;
   processedIds.add(msgId);
 
-  if (processedIds.size > 2_000) {
-    let count = 0;
-    for (const id of processedIds) {
-      processedIds.delete(id);
-      if (++count >= 200) break;
-    }
-  }
+  if (processedIds.size > 2_000) processedIds.clear();
 
   // ── Consultor ativado: silêncio total ────────────────────────────────────────
   // Após transferir para consultor, o bot ignora TUDO deste JID:
   //  - Não marca como lida (o usuário não vê o "visto" do bot)
   //  - Não responde nada
   //  - O consultor humano conduz a conversa livremente
-  if (consultorAtivado.has(jid)) return;
+  if (consultorAtivadoAtivo(jid)) return;
 
   // ── Lock por JID: previne race condition de boas-vindas duplas ───────────────
   // Se duas mensagens chegam rápido (eventos simultâneos), a segunda é descartada
@@ -885,7 +886,6 @@ async function encerrarSessaoAtiva(sock, jid) {
   usuariosConhecidos.delete(jid);
   ultimoContexto.delete(jid);
   nomeUsuario.delete(jid);
-  avisadoForaHorario.delete(jid);
 
   // Cancela timer de inatividade (sessão encerrada voluntariamente)
   if (sessionTimers.has(jid)) {
@@ -1024,4 +1024,13 @@ async function processarTexto(sock, jid, texto) {
   await enviarFallback(sock, jid);
 }
 
-module.exports = { handleMessage, verificarAdmin, atualizarCacheContatos };
+/**
+ * Cancela todos os timers de sessão ativos.
+ * Chamado durante o gracefulShutdown para não disparar envios após o socket fechar.
+ */
+function limparSessoes() {
+  for (const timer of sessionTimers.values()) clearTimeout(timer);
+  sessionTimers.clear();
+}
+
+module.exports = { handleMessage, verificarAdmin, atualizarCacheContatos, limparSessoes };

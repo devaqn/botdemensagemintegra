@@ -28,15 +28,16 @@
 
 'use strict';
 
-require('dotenv').config();
-
-const http     = require('http');  // módulo nativo
+const http   = require('http');
+const crypto = require('crypto');
 const cloudApi = require('./cloudApi');
 
 // ── Configuração ──────────────────────────────────────────────────────────────
 
 const VERIFY_TOKEN = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'integra_bot_webhook';
 const PORT         = parseInt(process.env.PORT || '3000', 10);
+const APP_SECRET   = process.env.WHATSAPP_APP_SECRET || null;
+const MAX_BODY     = 1_000_000; // 1 MB
 
 // ── Adaptador de mensagem ─────────────────────────────────────────────────────
 
@@ -241,9 +242,35 @@ function startWebhookServer(onMensagem) {
 
     // ── POST /webhook → mensagens e notificações recebidas ──────────────────
     if (req.method === 'POST' && url.pathname === '/webhook') {
-      let corpo = '';
-      req.on('data', (chunk) => { corpo += chunk; });
+      const chunks = [];
+      let totalSize = 0;
+
+      req.on('data', (chunk) => {
+        totalSize += chunk.length;
+        if (totalSize > MAX_BODY) {
+          req.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
+
       req.on('end',  async () => {
+        const corpo = Buffer.concat(chunks).toString('utf8');
+
+        // Valida assinatura HMAC-SHA256 enviada pelo Meta
+        if (APP_SECRET) {
+          const sig      = req.headers['x-hub-signature-256'] || '';
+          const expected = 'sha256=' + crypto.createHmac('sha256', APP_SECRET).update(corpo).digest('hex');
+          const sigBuf   = Buffer.from(sig.padEnd(expected.length));
+          const expBuf   = Buffer.from(expected);
+          if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+            console.warn('[CLOUD] ⚠️  Assinatura HMAC inválida — requisição ignorada.');
+            res.writeHead(401);
+            res.end('Unauthorized');
+            return;
+          }
+        }
+
         // Sempre responde 200 imediatamente ao Meta
         // (Meta considera falha se não receber 200 em 20s e vai reenviar)
         res.writeHead(200, { 'Content-Type': 'application/json' });

@@ -43,7 +43,7 @@ const {
 
 const pino   = require('pino');            // logger de alta performance (usado internamente)
 const qrcode = require('qrcode-terminal'); // renderiza QR code ASCII no terminal
-const { handleMessage, verificarAdmin, atualizarCacheContatos } = require('./messageHandler'); // lógica de resposta
+const { handleMessage, verificarAdmin, atualizarCacheContatos, limparSessoes } = require('./messageHandler');
 
 // ────────────────────────────────────────────────────────────
 //  Configurações de produção
@@ -103,6 +103,9 @@ async function gracefulShutdown(sinal) {
   encerrando = true;
 
   log('warn', `Sinal ${sinal} recebido. Encerrando bot com segurança...`);
+
+  // Cancela timers de sessão para evitar sendMessage após fechar o socket
+  limparSessoes();
 
   // [FIX 2] Cancela reconexão agendada para não disparar após o shutdown
   if (timerId) {

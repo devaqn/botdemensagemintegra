@@ -25,8 +25,6 @@
  * =============================================================
  */
 
-require('dotenv').config(); // carrega variáveis do arquivo .env
-
 const CONTENT = {
 
   // ──────────────────────────────────────────────────────────
@@ -34,7 +32,7 @@ const CONTENT = {
   //  ⚠️  Configure ADMIN_WHATSAPP no .env com o número do consultor real.
   //  Formato: DDI + DDD + número, sem + ou espaços. Ex: 5581999999999
   // ──────────────────────────────────────────────────────────
-  adminWhatsapp: process.env.ADMIN_WHATSAPP || '5581985761616',
+  adminWhatsapp: process.env.ADMIN_WHATSAPP || '',
 
   // ──────────────────────────────────────────────────────────
   //  Dados Institucionais — aparece em várias seções do bot
@@ -218,7 +216,7 @@ const CONTENT = {
     email:               'integrapsicanalise@gmail.com',
     instagram:           '@integrapsicanalise_',
     site:                'https://integrapsicanalise.com',
-    horario_atendimento: 'Segunda a Sábado, das 8h às 18h',
+    horario_atendimento: 'Segunda a Sábado, das 8h às 20h',
     agendamento_msg:     'Agendamentos de visita e inscrições são realizados pelo WhatsApp.',
   },
 };

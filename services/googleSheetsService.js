@@ -279,7 +279,8 @@ async function appendToSheet(data, _attempt = 1) {
       return appendToSheet(data, _attempt + 1);
     }
 
-    _logError(`appendToSheet failed permanently after 3 attempts. Lost row: ${JSON.stringify(data)}`);
+    const safe = { ...data, numero_whatsapp: (data.numero_whatsapp || '').slice(0, 6) + '****' };
+    _logError(`appendToSheet failed permanently after 3 attempts. Lost row: ${JSON.stringify(safe)}`);
   }
 }
 

@@ -64,6 +64,9 @@ const stmtTopInteresses = db.prepare(`
   LIMIT 10
 `);
 
+// Leads do mês: o parâmetro (data de início do mês) muda, mas o statement é fixo
+const stmtLeadsMes = db.prepare('SELECT COUNT(*) AS n FROM leads WHERE created_at >= ?');
+
 // ────────────────────────────────────────────────────────────
 //  Handler do endpoint /metrics
 // ────────────────────────────────────────────────────────────
@@ -72,12 +75,10 @@ function buildMetrics() {
   // Total geral
   const totalLeads = stmtTotal.get().n;
 
-  // Leads do mês atual (comparação por prefixo ISO: YYYY-MM)
-  const agora       = new Date();
-  const mesInicio   = new Date(agora.getFullYear(), agora.getMonth(), 1).toISOString();
-  const leadsMes    = db.prepare(
-    'SELECT COUNT(*) AS n FROM leads WHERE created_at >= ?'
-  ).get(mesInicio).n;
+  // Leads do mês atual
+  const agora     = new Date();
+  const mesInicio = new Date(agora.getFullYear(), agora.getMonth(), 1).toISOString();
+  const leadsMes  = stmtLeadsMes.get(mesInicio).n;
 
   // Convertidos e taxa
   const totalConvertidos = stmtConvertidos.get().n;
@@ -119,14 +120,20 @@ function buildMetrics() {
 // ────────────────────────────────────────────────────────────
 
 function startMetricsServer() {
-  const port = parseInt(process.env.METRICS_PORT || '4000', 10);
-  const app  = express();
+  const port         = parseInt(process.env.METRICS_PORT || '4000', 10);
+  const METRICS_TOKEN = process.env.METRICS_TOKEN || null;
+  const app          = express();
 
-  // Remove header X-Powered-By (boa prática de segurança)
   app.disable('x-powered-by');
 
   // ── GET /metrics ──────────────────────────────────────────
-  app.get('/metrics', (_req, res) => {
+  app.get('/metrics', (req, res) => {
+    if (METRICS_TOKEN) {
+      const auth = req.headers['authorization'] || '';
+      if (auth !== `Bearer ${METRICS_TOKEN}`) {
+        return res.status(401).json({ error: 'Não autorizado.' });
+      }
+    }
     try {
       const metricas = buildMetrics();
       res.json(metricas);

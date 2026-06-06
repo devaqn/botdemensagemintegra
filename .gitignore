@@ -12,6 +12,9 @@ logs/
 *.log
 npm-debug.log*
 
+# Dados de runtime (banco SQLite, estado round-robin, cache Sheets)
+data/
+
 # Cache interno
 lid-cache.json
 

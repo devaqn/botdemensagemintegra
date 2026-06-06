@@ -11,7 +11,8 @@
  *  Comportamento:
  *   - Se CONSULTORES não estiver configurado → retorna null
  *     (messageHandler usa ADMIN_WHATSAPP como fallback)
- *   - O índice atual é persistido em data/round-robin.json
+ *   - O índice é mantido em memória (sem bloqueio do event loop)
+ *     e persistido assincronamente em data/round-robin.json
  *     para sobreviver reinicializações do bot
  *   - Cada chamada a proximoConsultor() avança o ponteiro
  *
@@ -47,7 +48,8 @@ function _getConsultores() {
 }
 
 /**
- * Carrega o índice atual do disco.
+ * Carrega o índice atual do disco (chamado uma única vez na inicialização).
+ * I/O síncrono é aceitável aqui porque ocorre apenas na carga do módulo.
  * @returns {number}
  */
 function _loadIndex() {
@@ -56,24 +58,24 @@ function _loadIndex() {
     const obj = JSON.parse(raw);
     return typeof obj.index === 'number' ? obj.index : 0;
   } catch (_) {
-    return 0; // arquivo inexistente na primeira execução
+    return 0;
   }
 }
 
 /**
- * Salva o índice atual no disco.
+ * Persiste o índice no disco de forma assíncrona (não bloqueia o event loop).
  * @param {number} index
  */
-function _saveIndex(index) {
-  try {
-    // Garante que data/ existe (criado pelo db.js, mas pode ser chamado antes)
-    const dir = path.dirname(STATE_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(STATE_FILE, JSON.stringify({ index }, null, 2));
-  } catch (err) {
-    console.error('[ROUND-ROBIN] ❌ Erro ao salvar estado:', err.message);
-  }
+function _saveIndexAsync(index) {
+  const dir = path.dirname(STATE_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFile(STATE_FILE, JSON.stringify({ index }, null, 2), (err) => {
+    if (err) console.error('[ROUND-ROBIN] ❌ Erro ao salvar estado:', err.message);
+  });
 }
+
+// Índice em memória — carregado do disco uma única vez na inicialização
+let _memIndex = _loadIndex();
 
 // ────────────────────────────────────────────────────────────
 //  API pública
@@ -82,6 +84,9 @@ function _saveIndex(index) {
 /**
  * Retorna o próximo consultor em round-robin e avança o ponteiro.
  *
+ * O índice é mantido em memória (sem I/O bloqueante por chamada).
+ * O disco é atualizado de forma assíncrona após cada avanço.
+ *
  * @returns {string|null}
  *   Número de telefone do consultor (ex: '5581999999999')
  *   ou null se CONSULTORES não estiver configurado no .env
@@ -89,15 +94,14 @@ function _saveIndex(index) {
 function proximoConsultor() {
   const consultores = _getConsultores();
 
-  if (!consultores.length) return null; // sem consultores → usa admin como fallback
+  if (!consultores.length) return null;
 
-  const index     = _loadIndex();
-  const total     = consultores.length;
-  const idx       = index % total;
+  const total    = consultores.length;
+  const idx      = _memIndex % total;
   const consultor = consultores[idx];
 
-  // Avança o ponteiro (volta para 0 ao chegar no final)
-  _saveIndex((idx + 1) % total);
+  _memIndex = (idx + 1) % total;
+  _saveIndexAsync(_memIndex);
 
   console.log(
     `[ROUND-ROBIN] 🔄 Atribuindo consultor ${idx + 1}/${total}: ${consultor}`

@@ -65,7 +65,6 @@ function postApi(payload) {
           if (res.statusCode >= 200 && res.statusCode < 300) {
             resolve(json);
           } else {
-            // Loga detalhe do erro da API para facilitar debug
             const erroMeta = json?.error?.message || JSON.stringify(json);
             reject(new Error(`[CLOUD] API ${res.statusCode}: ${erroMeta}`));
           }
@@ -73,6 +72,11 @@ function postApi(payload) {
           reject(new Error(`[CLOUD] Resposta inválida da API: ${data.slice(0, 200)}`));
         }
       });
+    });
+
+    // Aborta a requisição se a Meta não responder em 15 segundos
+    req.setTimeout(15_000, () => {
+      req.destroy(new Error('[CLOUD] Timeout: Meta não respondeu em 15s'));
     });
 
     req.on('error', (err) => reject(new Error(`[CLOUD] Falha na requisição: ${err.message}`)));
