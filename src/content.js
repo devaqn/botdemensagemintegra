@@ -45,7 +45,7 @@ const CONTENT = {
     site:        'https://integrapsicanalise.com',
     email:       'integrapsicanalise@gmail.com',
     instagram:   '@integrapsicanalise_',
-    whatsapp:    '5581985761616', // formato internacional sem + (para links wa.me)
+    whatsapp:    process.env.SCHOOL_WHATSAPP || '5581985761616', // formato internacional sem + (para links wa.me)
     telefone:    '(81) 98576-1616',
   },
 
@@ -200,7 +200,7 @@ const CONTENT = {
     endereco:  'R. Sete de Setembro, 454',
     cidade:    'Recife — PE',
     telefone:  '(81) 98576-1616',
-    whatsapp:  '5581985761616', // formato internacional sem + (para links wa.me)
+    whatsapp:  process.env.SCHOOL_WHATSAPP || '5581985761616', // formato internacional sem + (para links wa.me)
     estrutura: 'Salas modernas e confortáveis, biblioteca especializada em psicologia, sala de supervisão e espaço de convivência.',
     maps:      'https://maps.app.goo.gl/uhXwc2n26qb1tP6fA', // link encurtado do Google Maps
   },
@@ -211,7 +211,7 @@ const CONTENT = {
   //  Também usado em textoConsultor e textoUnidade
   // ──────────────────────────────────────────────────────────
   contato: {
-    whatsapp:            '5581985761616',             // para links wa.me (sem + e sem espaços)
+    whatsapp:            process.env.SCHOOL_WHATSAPP || '5581985761616',             // para links wa.me (sem + e sem espaços)
     telefone:            '(81) 98576-1616',           // exibido para o usuário
     email:               'integrapsicanalise@gmail.com',
     instagram:           '@integrapsicanalise_',

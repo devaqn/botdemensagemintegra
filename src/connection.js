@@ -131,28 +131,6 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM')); // enviado pelo PM2 ao
 process.on('SIGINT',  () => gracefulShutdown('SIGINT'));  // gerado pelo Ctrl+C no terminal
 
 // ────────────────────────────────────────────────────────────
-//  Tratamento de erros não capturados
-// ────────────────────────────────────────────────────────────
-
-/**
- * Captura exceções JavaScript não tratadas (bugs inesperados no código).
- * Loga o erro completo sem derrubar o processo imediatamente.
- * O PM2 reiniciará o processo se ele travar via max_restarts/autorestart.
- */
-process.on('uncaughtException', (err) => {
-  log('erro', `Exceção não capturada: ${err.message}`);
-  console.error(err.stack); // stack trace completo para diagnóstico
-});
-
-/**
- * Captura Promises rejeitadas sem um .catch() correspondente.
- * Evita que erros silenciosos passem despercebidos em operações assíncronas.
- */
-process.on('unhandledRejection', (reason) => {
-  log('warn', `Promise rejeitada sem handler: ${reason}`);
-});
-
-// ────────────────────────────────────────────────────────────
 //  Inicialização da conexão WhatsApp
 // ────────────────────────────────────────────────────────────
 
@@ -166,6 +144,10 @@ async function startConnection() {
 
   // [FIX 3] Impede inicialização se já estamos em processo de shutdown
   if (encerrando) return;
+
+  // Cancela timers de sessão do ciclo anterior — evita sendMessage com socket obsoleto
+  // em reconexões automáticas (limparSessoes() é no-op na primeira inicialização)
+  limparSessoes();
 
   // ── Carrega (ou cria) as credenciais de sessão salvas em disco ────────────
   // useMultiFileAuthState salva cada tipo de dado (keys, creds) em arquivos
@@ -268,11 +250,16 @@ async function startConnection() {
         process.exit(1);
       }
 
-      // Incrementa contador e agenda reconexão com backoff linear:
-      // 1ª tentativa: 5s | 2ª: 10s | 3ª: 15s | ... | 10ª: 50s
+      // Incrementa contador e agenda reconexão com backoff exponencial + jitter:
+      //   delay = min(base * 2^(tentativa-1), teto) + jitter aleatório
+      //   Ex: 1ª: ~5s | 2ª: ~10s | 3ª: ~20s | 4ª: ~40s | 5ª+: ~60s (+ ±2s)
+      // Backoff exponencial é mais adequado que linear para throttling do WhatsApp,
+      // que pode exigir esperas de minutos antes de aceitar nova conexão.
       tentativasReconexao++;
-      const delay = DELAY_RECONEXAO * tentativasReconexao;
-      log('warn', `Conexão perdida (código: ${statusCode ?? 'desconhecido'}). Tentativa ${tentativasReconexao}/${MAX_RECONEXOES} em ${delay / 1000}s...`);
+      const base  = Math.min(DELAY_RECONEXAO * Math.pow(2, tentativasReconexao - 1), 60_000);
+      const jitter = Math.floor(Math.random() * 2_000); // ±2s de variação
+      const delay  = base + jitter;
+      log('warn', `Conexão perdida (código: ${statusCode ?? 'desconhecido'}). Tentativa ${tentativasReconexao}/${MAX_RECONEXOES} em ${(delay / 1000).toFixed(1)}s...`);
 
       // [FIX 2] Armazena referência do timer para poder cancelar no gracefulShutdown
       timerId = setTimeout(startConnection, delay);

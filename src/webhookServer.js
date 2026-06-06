@@ -218,6 +218,11 @@ function criarSockCloud() {
 function startWebhookServer(onMensagem) {
   const sock = criarSockCloud();
 
+  if (!APP_SECRET) {
+    console.warn('[CLOUD] ⚠️  WHATSAPP_APP_SECRET não configurado — validação HMAC desativada.');
+    console.warn('[CLOUD] ⚠️  Qualquer agente pode injetar mensagens. Configure em produção!');
+  }
+
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
 

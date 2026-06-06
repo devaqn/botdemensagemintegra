@@ -124,6 +124,11 @@ function startMetricsServer() {
   const METRICS_TOKEN = process.env.METRICS_TOKEN || null;
   const app          = express();
 
+  if (!METRICS_TOKEN) {
+    console.warn('[METRICS] ⚠️  METRICS_TOKEN não configurado — endpoint /metrics sem autenticação.');
+    console.warn('[METRICS] ⚠️  Configure METRICS_TOKEN no .env para proteger os dados comerciais.');
+  }
+
   app.disable('x-powered-by');
 
   // ── GET /metrics ──────────────────────────────────────────

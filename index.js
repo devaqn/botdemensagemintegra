@@ -41,6 +41,17 @@
 // para que USE_CLOUD_API e demais variáveis já estejam disponíveis.
 require('dotenv').config();
 
+// ── Handlers globais de erro — registrados aqui para cobrir AMBOS os modos ──
+// (Baileys e Cloud API). connection.js não é carregado no modo Cloud API,
+// então esses handlers precisam estar em index.js para garantir cobertura total.
+process.on('uncaughtException', (err) => {
+  console.error(`[BOT] ❌ Exceção não capturada: ${err.message}`);
+  console.error(err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+  console.warn(`[BOT] ⚠️  Promise rejeitada sem handler: ${reason}`);
+});
+
 // ── Banner de inicialização ───────────────────────────────────
 console.log('\n' + '═'.repeat(52));
 console.log('   🧠  INTEGRA PSICANÁLISE — BOT WHATSAPP  🧠');

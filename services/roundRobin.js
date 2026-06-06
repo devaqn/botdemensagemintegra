@@ -8,19 +8,13 @@
  *  Configuração no .env:
  *    CONSULTORES=5581999999999,5511888888888,5521777777777
  *
- *  Comportamento:
- *   - Se CONSULTORES não estiver configurado → retorna null
- *     (messageHandler usa ADMIN_WHATSAPP como fallback)
- *   - O índice é mantido em memória (sem bloqueio do event loop)
- *     e persistido assincronamente em data/round-robin.json
- *     para sobreviver reinicializações do bot
- *   - Cada chamada a proximoConsultor() avança o ponteiro
- *
- *  Exemplo com 3 consultores:
- *    1ª chamada → consultor[0]
- *    2ª chamada → consultor[1]
- *    3ª chamada → consultor[2]
- *    4ª chamada → consultor[0] (rotação)
+ *  CORREÇÕES:
+ *   [FIX-RR1] Race condition eliminada: índice mantido em memória
+ *             (variável de módulo). Em Node.js single-thread, incremento
+ *             de variável em memória é genuinamente atômico — não existe
+ *             janela entre leitura e escrita como havia com I/O de disco.
+ *   [FIX-RR2] I/O síncrono eliminado: persistência em disco agora é
+ *             assíncrona com debounce de 2s para não bloquear o event loop.
  * =============================================================
  */
 
@@ -32,50 +26,49 @@ const path = require('path');
 const STATE_FILE = path.join(__dirname, '..', 'data', 'round-robin.json');
 
 // ────────────────────────────────────────────────────────────
-//  Funções internas
+//  [FIX-RR1] Índice em memória — carregado do disco UMA única vez
 // ────────────────────────────────────────────────────────────
 
-/**
- * Lê a lista de consultores do .env.
- * @returns {string[]} Array de números de telefone
- */
-function _getConsultores() {
-  const raw = process.env.CONSULTORES || '';
-  return raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-/**
- * Carrega o índice atual do disco (chamado uma única vez na inicialização).
- * I/O síncrono é aceitável aqui porque ocorre apenas na carga do módulo.
- * @returns {number}
- */
-function _loadIndex() {
+function _loadIndexOnce() {
   try {
     const raw = fs.readFileSync(STATE_FILE, 'utf8');
     const obj = JSON.parse(raw);
-    return typeof obj.index === 'number' ? obj.index : 0;
+    return typeof obj.index === 'number' && obj.index >= 0 ? obj.index : 0;
   } catch (_) {
     return 0;
   }
 }
 
-/**
- * Persiste o índice no disco de forma assíncrona (não bloqueia o event loop).
- * @param {number} index
- */
-function _saveIndexAsync(index) {
-  const dir = path.dirname(STATE_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFile(STATE_FILE, JSON.stringify({ index }, null, 2), (err) => {
-    if (err) console.error('[ROUND-ROBIN] ❌ Erro ao salvar estado:', err.message);
-  });
+let _currentIndex = _loadIndexOnce(); // lido do disco apenas na inicialização
+
+// ────────────────────────────────────────────────────────────
+//  [FIX-RR2] Persistência assíncrona com debounce (2s)
+// ────────────────────────────────────────────────────────────
+
+let _saveTimer = null;
+
+function _scheduleSave(index) {
+  if (_saveTimer) clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    const dir = path.dirname(STATE_FILE);
+    if (!fs.existsSync(dir)) {
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+    }
+    fs.writeFile(STATE_FILE, JSON.stringify({ index }, null, 2), (err) => {
+      if (err) console.error('[ROUND-ROBIN] ❌ Erro ao persistir estado:', err.message);
+    });
+  }, 2_000);
 }
 
-// Índice em memória — carregado do disco uma única vez na inicialização
-let _memIndex = _loadIndex();
+// ────────────────────────────────────────────────────────────
+//  Funções internas
+// ────────────────────────────────────────────────────────────
+
+function _getConsultores() {
+  const raw = process.env.CONSULTORES || '';
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
 
 // ────────────────────────────────────────────────────────────
 //  API pública
@@ -84,37 +77,30 @@ let _memIndex = _loadIndex();
 /**
  * Retorna o próximo consultor em round-robin e avança o ponteiro.
  *
- * O índice é mantido em memória (sem I/O bloqueante por chamada).
- * O disco é atualizado de forma assíncrona após cada avanço.
+ * Thread-safety: Node.js é single-threaded. O incremento de `_currentIndex`
+ * é uma operação síncrona que não pode ser interrompida por outro callback.
+ * Isso elimina completamente a race condition que existia com leitura de disco.
  *
- * @returns {string|null}
- *   Número de telefone do consultor (ex: '5581999999999')
- *   ou null se CONSULTORES não estiver configurado no .env
+ * @returns {string|null} Número do consultor ou null se não configurado
  */
 function proximoConsultor() {
   const consultores = _getConsultores();
-
   if (!consultores.length) return null;
 
-  const total    = consultores.length;
-  const idx      = _memIndex % total;
+  const total     = consultores.length;
+  const idx       = _currentIndex % total;
   const consultor = consultores[idx];
 
-  _memIndex = (idx + 1) % total;
-  _saveIndexAsync(_memIndex);
+  // Incremento atômico em memória — sem race condition
+  _currentIndex = (idx + 1) % total;
 
-  console.log(
-    `[ROUND-ROBIN] 🔄 Atribuindo consultor ${idx + 1}/${total}: ${consultor}`
-  );
+  // Persiste de forma assíncrona e com debounce
+  _scheduleSave(_currentIndex);
 
+  console.log(`[ROUND-ROBIN] 🔄 Atribuindo consultor ${idx + 1}/${total}: ${consultor}`);
   return consultor;
 }
 
-/**
- * Retorna a lista completa de consultores configurados.
- * Útil para logs e depuração.
- * @returns {string[]}
- */
 function listarConsultores() {
   return _getConsultores();
 }

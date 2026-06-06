@@ -141,20 +141,23 @@ setInterval(() => {
 }, 60 * 60 * 1_000).unref();
 
 /**
- * Lock por JID — previne race condition quando o usuário envia várias mensagens
- * muito rapidamente (ex: "oi" seguido imediatamente de outra mensagem).
+ * Fila de processamento por JID — garante serialização sem descartar mensagens.
  *
- * Problema sem o lock:
- *  - Mensagem 1 chega → handleMessage inicia → verifica !usuariosConhecidos → TRUE
- *  - Mensagem 2 chega em paralelo → handleMessage inicia → verifica !usuariosConhecidos → ainda TRUE
- *  - Resultado: boas-vindas enviadas duas vezes
+ * Problema anterior (Set de lock):
+ *  - Mensagem 2 chegava enquanto Mensagem 1 processava → era DESCARTADA permanentemente.
+ *  - Usuários que digitavam rápido ("oi" + texto imediato) ficavam sem resposta.
  *
- * Com o lock:
- *  - Mensagem 1 adiciona jid ao lock → processa normalmente
- *  - Mensagem 2 encontra o lock ativo → descarta silenciosamente
- *  - Resultado: apenas uma boas-vindas, sem duplicação
+ * Solução (Map de promises encadeadas):
+ *  - Mensagem 1 chega → registra uma promise → processa normalmente
+ *  - Mensagem 2 chega → encadeia após a promise da Mensagem 1 → aguarda e processa
+ *  - Resultado: processamento sequencial por JID, nenhuma mensagem descartada
+ *
+ * Implementação:
+ *  - jidQueue mapeia jid → última Promise da fila daquele JID
+ *  - Cada nova mensagem cria uma nova promise encadeada no final da fila
+ *  - A entrada do Map é removida quando a fila zera (sem vazamento de memória)
  */
-const processingLock = new Set();
+const jidQueue = new Map(); // jid → Promise (última da fila)
 
 /**
  * Timers de encerramento de sessão por JID.
@@ -394,6 +397,19 @@ function limparColecaoSeNecessario(colecao, maxSize = 5_000, batchDelete = 100) 
   }
 }
 
+/**
+ * Resolve o número de telefone de um JID para uso no banco de dados.
+ * Para JIDs @lid (contatos salvos no celular), tenta o cache local antes
+ * de retornar o raw ID — evita gravar LIDs inutilizáveis no banco.
+ */
+function resolverNumero(jid) {
+  const raw = jid.split('@')[0];
+  if (jid.endsWith('@lid') && cacheContatosLid.has(raw)) {
+    return cacheContatosLid.get(raw);
+  }
+  return raw;
+}
+
 // ────────────────────────────────────────────────────────────
 //  Envio de mensagens
 // ────────────────────────────────────────────────────────────
@@ -448,7 +464,7 @@ async function enviarFallback(sock, jid) {
  *    está ativo, retornando o JID correto (que pode diferir do número digitado).
  *
  * @param {object} sock        - Socket do Baileys
- * @param {string} adminPhone  - Número do admin (ex: '5581998191625')
+ * @param {string} adminPhone  - Número do admin (ex: '5581999999999')
  * @returns {string|null} JID real do admin ou null se não encontrado
  */
 async function resolverJidAdmin(sock, adminPhone) {
@@ -615,7 +631,7 @@ async function acionarConsultor(sock, jid) {
   await enviarConteudo(sock, jid, textoConsultor());
 
   // ── Round-robin: atribui consultor e registra no banco ─────────────────────
-  const numero            = jid.split('@')[0];
+  const numero            = resolverNumero(jid);
   const consultorAssignado = roundRobin.proximoConsultor(); // null se não configurado
   leadService.qualificarLead(numero, consultorAssignado);
 
@@ -747,14 +763,29 @@ async function handleMessage(sock, message) {
   //  - O consultor humano conduz a conversa livremente
   if (consultorAtivadoAtivo(jid)) return;
 
-  // ── Lock por JID: previne race condition de boas-vindas duplas ───────────────
-  // Se duas mensagens chegam rápido (eventos simultâneos), a segunda é descartada
-  // silenciosamente enquanto a primeira está sendo processada.
-  // Sem este lock, ambas passariam pelo check !usuariosConhecidos ao mesmo tempo,
-  // resultando em duas mensagens de boas-vindas.
-  if (processingLock.has(jid)) return;
-  processingLock.add(jid);
+  // ── Fila por JID: garante processamento sequencial sem descartar mensagens ───
+  // Cada mensagem encadeia sua execução após a anterior do mesmo JID.
+  // Nenhuma mensagem é descartada — apenas serializadas.
+  const anterior = jidQueue.get(jid) || Promise.resolve();
 
+  const proxima = anterior.then(() => _processarMensagem(sock, message, jid));
+
+  // Registra a nova "última promise" da fila deste JID
+  jidQueue.set(jid, proxima);
+
+  // Quando a promise terminar (com ou sem erro), limpa a entrada do Map
+  // para evitar que o Map cresça indefinidamente com promises já resolvidas.
+  proxima.finally(() => {
+    // Só remove se esta ainda for a última da fila (evita remover uma entrada mais nova)
+    if (jidQueue.get(jid) === proxima) jidQueue.delete(jid);
+  });
+}
+
+/**
+ * Lógica interna de processamento de uma mensagem — sempre chamada de forma
+ * sequencial pela fila por JID (jidQueue). Nunca chamada diretamente.
+ */
+async function _processarMensagem(sock, message, jid) {
   try {
 
     await marcarComoLida(sock, message);
@@ -776,7 +807,6 @@ async function handleMessage(sock, message) {
     //   }
     //   return;
     // }
-    // avisadoForaHorario.delete(jid);
 
     // ── Extrai e armazena nome do usuário ──────────────────────────────────────
     if (message.pushName) {
@@ -788,10 +818,8 @@ async function handleMessage(sock, message) {
     const nome = nomeUsuario.get(jid) || null;
 
     // ── Registro de lead no banco (primeiro contato) ───────────────────────────
-    // Chama upsertLead somente antes de adicionar ao Set usuariosConhecidos.
-    // Após o primeiro contato, o lead já existe no banco e upsertLead não duplica.
     if (!usuariosConhecidos.has(jid)) {
-      leadService.upsertLead(jid.split('@')[0], nome);
+      leadService.upsertLead(resolverNumero(jid), nome);
     }
 
     // ── Clique em botão (modo Business) ───────────────────────────────────────
@@ -829,7 +857,7 @@ async function handleMessage(sock, message) {
       const txtBV = mensagemBoasVindas(nome, tipoSaudacao || 'geral');
       await simularDigitando(sock, jid, txtBV);
       await sock.sendMessage(jid, { text: txtBV });
-      await sleep(700); // pausa humanizante entre boas-vindas e menu
+      await sleep(700);
       return await enviarMenuPrincipal(sock, jid);
     }
 
@@ -850,15 +878,10 @@ async function handleMessage(sock, message) {
     // ── Qualquer outro texto → roteamento por número/keyword ──────────────────
     return await processarTexto(sock, jid, texto);
 
+  } catch (err) {
+    console.error(`[BOT] ❌ Erro ao processar mensagem de ${jid.split('@')[0]}: ${err.message}`);
   } finally {
-    // ── Libera o lock e (re)inicia o timer de inatividade ─────────────────────
-    // O finally garante execução mesmo em caso de erro ou return antecipado.
-    //
-    // Lock: liberado SEMPRE, independente do caminho de retorno.
-    // Timer: reiniciado a cada mensagem recebida (contagem regressiva de 5 min).
-    //        Se o usuário ficar inativo, a sessão será encerrada e uma
-    //        mensagem de despedida será enviada automaticamente.
-    processingLock.delete(jid);
+    // Timer de inatividade reiniciado a cada mensagem processada.
     agendarEncerramentoSessao(sock, jid);
   }
 }
@@ -912,7 +935,7 @@ async function processarBotao(sock, jid, id) {
   const rota = ROTAS_BOTAO[id];
   if (rota) {
     ultimoContexto.set(jid, rota.ctx);
-    leadService.updateInteresse(jid.split('@')[0], rota.ctx);
+    leadService.updateInteresse(resolverNumero(jid), rota.ctx);
     return await enviarConteudo(sock, jid, rota.fn());
   }
 
@@ -940,7 +963,7 @@ async function processarTexto(sock, jid, texto) {
   if (ROTAS_TEXTO[texto]) {
     const { ctx, fn } = ROTAS_TEXTO[texto];
     ultimoContexto.set(jid, ctx);
-    leadService.updateInteresse(jid.split('@')[0], ctx);
+    leadService.updateInteresse(resolverNumero(jid), ctx);
     return await enviarConteudo(sock, jid, fn());
   }
 
@@ -970,7 +993,7 @@ async function processarTexto(sock, jid, texto) {
   if (['sobre', 'história', 'historia', 'missão', 'missao', 'proposta',
        'diferencial', 'escola', 'o que é', 'quem são', 'o que e'].some(k => texto.includes(k))) {
     ultimoContexto.set(jid, 'Sobre a Integra Psicanálise');
-    leadService.updateInteresse(jid.split('@')[0], 'Sobre a Integra Psicanálise');
+    leadService.updateInteresse(resolverNumero(jid), 'Sobre a Integra Psicanálise');
     return await enviarConteudo(sock, jid, textoSobre());
   }
 
@@ -978,14 +1001,14 @@ async function processarTexto(sock, jid, texto) {
   if (['módulo', 'modulo', 'formação', 'formacao', 'disciplina', 'curso',
        'grade', 'aula', 'conteúdo', 'conteudo', 'aprender', 'duração', 'duracao'].some(k => texto.includes(k))) {
     ultimoContexto.set(jid, 'Formação e Módulos');
-    leadService.updateInteresse(jid.split('@')[0], 'Formação e Módulos');
+    leadService.updateInteresse(resolverNumero(jid), 'Formação e Módulos');
     return await enviarConteudo(sock, jid, textoFormacao());
   }
 
   // Equipe Docente
   if (['professor', 'docente', 'equipe', 'instrutor', 'quem ensina', 'corpo docente'].some(k => texto.includes(k))) {
     ultimoContexto.set(jid, 'Equipe Docente');
-    leadService.updateInteresse(jid.split('@')[0], 'Equipe Docente');
+    leadService.updateInteresse(resolverNumero(jid), 'Equipe Docente');
     return await enviarConteudo(sock, jid, textoDocente());
   }
 
@@ -993,7 +1016,7 @@ async function processarTexto(sock, jid, texto) {
   if (['valor', 'preço', 'preco', 'custo', 'mensalidade', 'matrícula', 'matricula',
        'pagamento', 'boleto', 'pix', 'quanto', 'desconto', 'benefício', 'beneficio', 'parcela'].some(k => texto.includes(k))) {
     ultimoContexto.set(jid, 'Condições e Benefícios');
-    leadService.updateInteresse(jid.split('@')[0], 'Condições e Benefícios');
+    leadService.updateInteresse(resolverNumero(jid), 'Condições e Benefícios');
     return await enviarConteudo(sock, jid, textoCondicoes());
   }
 
@@ -1002,7 +1025,7 @@ async function processarTexto(sock, jid, texto) {
        'caruaru', 'campina', 'joão pessoa', 'joao pessoa', 'nordeste',
        'como chegar', 'mapa', 'rua', 'localização', 'localizacao', 'fica'].some(k => texto.includes(k))) {
     ultimoContexto.set(jid, 'Unidade e Localização');
-    leadService.updateInteresse(jid.split('@')[0], 'Unidade e Localização');
+    leadService.updateInteresse(resolverNumero(jid), 'Unidade e Localização');
     return await enviarConteudo(sock, jid, textoUnidade());
   }
 
@@ -1010,7 +1033,7 @@ async function processarTexto(sock, jid, texto) {
   if (['contato', 'ligar', 'email', 'instagram', 'agendar', 'visita',
        'inscrever', 'inscrição', 'inscricao', 'telefone', 'site'].some(k => texto.includes(k))) {
     ultimoContexto.set(jid, 'Contato / Agendamento');
-    leadService.updateInteresse(jid.split('@')[0], 'Contato / Agendamento');
+    leadService.updateInteresse(resolverNumero(jid), 'Contato / Agendamento');
     return await enviarConteudo(sock, jid, textoContato());
   }
 
@@ -1025,12 +1048,13 @@ async function processarTexto(sock, jid, texto) {
 }
 
 /**
- * Cancela todos os timers de sessão ativos.
+ * Cancela todos os timers de sessão ativos e esvazia a fila por JID.
  * Chamado durante o gracefulShutdown para não disparar envios após o socket fechar.
  */
 function limparSessoes() {
   for (const timer of sessionTimers.values()) clearTimeout(timer);
   sessionTimers.clear();
+  jidQueue.clear();
 }
 
 module.exports = { handleMessage, verificarAdmin, atualizarCacheContatos, limparSessoes };

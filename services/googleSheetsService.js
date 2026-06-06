@@ -90,23 +90,11 @@ function _loadCachedSpreadsheetId() {
 }
 
 function _saveCachedSpreadsheetId(spreadsheetId, tabName) {
-  try {
-    _ensureDataDir();
-    fs.writeFileSync(
-      CACHE_FILE,
-      JSON.stringify(
-        {
-          spreadsheetId,
-          tabName,
-          createdAt: new Date().toISOString(),
-        },
-        null,
-        2
-      )
-    );
-  } catch (err) {
-    _logError(`Failed to save sheets cache: ${err.message}`);
-  }
+  _ensureDataDir();
+  const data = JSON.stringify({ spreadsheetId, tabName, createdAt: new Date().toISOString() }, null, 2);
+  fs.writeFile(CACHE_FILE, data, (err) => {
+    if (err) _logError(`Failed to save sheets cache: ${err.message}`);
+  });
 }
 
 function _formatDateBR() {
@@ -224,14 +212,17 @@ async function _initContext() {
 }
 
 async function _getContext() {
-  if (!contextPromise) contextPromise = _initContext();
-
-  try {
-    return await contextPromise;
-  } catch (err) {
-    contextPromise = null;
-    throw err;
+  // [FIX] Padrão singleton sem thundering herd:
+  // Múltiplas chamadas concorrentes compartilham a MESMA promise enquanto está pendente.
+  // Se a promise falhar, o .catch interno reseta contextPromise UMA ÚNICA VEZ,
+  // impedindo que N chamadas concorrentes criem N re-inicializações paralelas.
+  if (!contextPromise) {
+    contextPromise = _initContext().catch((err) => {
+      contextPromise = null; // permite nova tentativa após falha
+      throw err;             // propaga o erro para os chamadores
+    });
   }
+  return contextPromise;
 }
 
 function _buildRow(data) {
@@ -272,15 +263,19 @@ async function appendToSheet(data, _attempt = 1) {
     });
   } catch (err) {
     _logError(`appendToSheet attempt ${_attempt}: ${err.message}`);
-    contextPromise = null;
+    // contextPromise já foi resetado pelo .catch interno de _getContext() — não precisa resetar aqui
 
     if (_attempt < 3) {
-      await new Promise((r) => setTimeout(r, 3_000));
+      await new Promise((r) => setTimeout(r, 3_000 * _attempt)); // backoff progressivo
       return appendToSheet(data, _attempt + 1);
     }
 
-    const safe = { ...data, numero_whatsapp: (data.numero_whatsapp || '').slice(0, 6) + '****' };
-    _logError(`appendToSheet failed permanently after 3 attempts. Lost row: ${JSON.stringify(safe)}`);
+    // Loga sem PII completa — trunca o número para preservar privacidade
+    const safe = {
+      ...data,
+      numero_whatsapp: (data.numero_whatsapp || '').slice(0, 4) + '****',
+    };
+    _logError(`appendToSheet falhou após 3 tentativas. Linha perdida: ${JSON.stringify(safe)}`);
   }
 }
 
