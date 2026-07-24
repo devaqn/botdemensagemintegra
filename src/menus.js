@@ -171,7 +171,7 @@ function textoSobre() {
 
 /**
  * Seção 2 — Formação e Módulos
- * Lista os 5 módulos progressivos com todas as 25 disciplinas.
+ * Lista os 5 módulos progressivos com todas as 27 disciplinas.
  * Os dados são lidos dinamicamente do content.js (array de módulos).
  *
  * @returns {string} Texto formatado da grade curricular + rodapé de navegação

@@ -15,7 +15,7 @@
     "setup": "npm install && cp -n .env.example .env || true"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18 <=22"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",

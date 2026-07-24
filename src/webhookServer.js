@@ -238,7 +238,7 @@ function startWebhookServer(onMensagem) {
         res.end(challenge); // o Meta espera receber o challenge de volta
       } else {
         console.warn('[CLOUD] ❌ Falha na verificação do webhook — token incorreto.');
-        console.warn(`[CLOUD]    Esperado: ${VERIFY_TOKEN} | Recebido: ${token}`);
+        console.warn('[CLOUD]    Verifique se WHATSAPP_WEBHOOK_VERIFY_TOKEN no .env bate com o painel Meta.');
         res.writeHead(403);
         res.end('Forbidden');
       }

@@ -64,6 +64,22 @@ console.log('─'.repeat(52));
 const { startMetricsServer } = require('./services/metricsServer');
 startMetricsServer();
 
+// ── Validação de configuração mínima (cobre AMBOS os modos) ───
+// Notificações de consultor exigem ao menos um destino: ADMIN_WHATSAPP
+// (fallback) ou CONSULTORES (round-robin). Sem nenhum dos dois, o pedido
+// de "falar com consultor" é registrado no banco mas NUNCA é entregue.
+// No modo Cloud API não há verificarAdmin(), então este aviso é a única
+// proteção contra subir sem destino configurado.
+const _temAdmin       = (process.env.ADMIN_WHATSAPP || '').trim().length > 0;
+const _temConsultores = (process.env.CONSULTORES || '').trim().length > 0;
+if (!_temAdmin && !_temConsultores) {
+  console.warn('─'.repeat(52));
+  console.warn('   ⚠️  ADMIN_WHATSAPP e CONSULTORES estão vazios!');
+  console.warn('   Pedidos de "falar com consultor" NÃO serão entregues.');
+  console.warn('   Configure ADMIN_WHATSAPP no .env antes de produção.');
+  console.warn('─'.repeat(52));
+}
+
 // ── Escolha do modo de operação ───────────────────────────────
 const USE_CLOUD_API = process.env.USE_CLOUD_API === 'true';
 

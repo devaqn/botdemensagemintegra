@@ -6,7 +6,7 @@
  *   1. Criar e configurar o socket WebSocket com o WhatsApp
  *   2. Exibir QR code no terminal (primeiro login)
  *   3. Persistir sessão em disco (pasta auth_info_integra/)
- *   4. Reconectar automaticamente com backoff linear ao cair
+ *   4. Reconectar automaticamente com backoff exponencial ao cair
  *   5. Encerrar de forma limpa ao receber SIGTERM/SIGINT (PM2)
  *
  *  Fluxo de conexão:
@@ -51,7 +51,7 @@ const { handleMessage, verificarAdmin, atualizarCacheContatos, limparSessoes } =
 
 const AUTH_FOLDER     = './auth_info_integra'; // pasta onde as credenciais são persistidas
 const MAX_RECONEXOES  = 10;                    // máximo de reconexões antes de reiniciar processo
-const DELAY_RECONEXAO = 5_000;                 // ms de espera base entre reconexões (backoff linear)
+const DELAY_RECONEXAO = 5_000;                 // ms de espera base entre reconexões (backoff exponencial)
 
 // ────────────────────────────────────────────────────────────
 //  Estado de reconexão (variáveis de módulo — persistem entre chamadas)

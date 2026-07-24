@@ -38,6 +38,7 @@ const {
   textoUnidade,
   textoContato,
   textoConsultor,
+  textoForaDeHorario,
   textoFallback,
 } = require('./menus');
 
@@ -118,6 +119,9 @@ const nomeUsuario = new Map();
 /** IDs de mensagens já processadas — evita processamento duplicado */
 const processedIds = new Set();
 
+/** JIDs que já receberam o aviso de "fora do horário" nesta sessão (evita repetir) */
+const avisadoForaHorario = new Set();
+
 /**
  * JIDs que foram transferidos para o consultor humano.
  * Mapeia jid → timestamp de ativação. Entradas com mais de 7 dias são
@@ -183,6 +187,14 @@ const SESSION_TIMEOUT = 5 * 60 * 1_000; // 5 minutos
  *   ambos   → privado + grupo
  */
 const MODO_ATENDIMENTO = (process.env.MODO_ATENDIMENTO || 'privado').toLowerCase();
+
+/**
+ * Restrição de horário de atendimento (Segunda a Sábado, 8h–20h BRT).
+ * Definido via HORARIO_COMERCIAL no .env:
+ *   false (padrão) → bot responde 24h
+ *   true           → fora do horário, envia aviso (uma vez por sessão) e não atende
+ */
+const HORARIO_COMERCIAL = String(process.env.HORARIO_COMERCIAL || 'false').toLowerCase() === 'true';
 
 // ────────────────────────────────────────────────────────────
 //  Tabelas de roteamento
@@ -694,6 +706,7 @@ function agendarEncerramentoSessao(sock, jid) {
     usuariosConhecidos.delete(jid);
     ultimoContexto.delete(jid);
     nomeUsuario.delete(jid);
+    avisadoForaHorario.delete(jid);
     // (consultorAtivado NÃO é limpo: o consultor pode continuar a conversa)
 
     // ── Envia mensagem de encerramento (apenas se a sessão estava ativa) ────
@@ -794,19 +807,19 @@ async function _processarMensagem(sock, message, jid) {
     await sleep(400 + Math.floor(Math.random() * 300));
 
     // ── Verificação de horário de atendimento ──────────────────────────────────
-    // ⚠️  TEMPORARIAMENTE DESATIVADO — bot responde 24h por enquanto.
-    // Para reativar: descomente o bloco abaixo e remova esta linha de comentário.
-    //
-    // if (!dentroDoHorario()) {
-    //   if (!avisadoForaHorario.has(jid)) {
-    //     avisadoForaHorario.add(jid);
-    //     const txtFora = textoForaDeHorario();
-    //     await simularDigitando(sock, jid, txtFora);
-    //     await sock.sendMessage(jid, { text: txtFora });
-    //     console.log(`[BOT] ⏰ Fora do horário — aviso enviado para ${jid.split('@')[0]}`);
-    //   }
-    //   return;
-    // }
+    // Ativado apenas quando HORARIO_COMERCIAL=true no .env (padrão: bot responde 24h).
+    // Fora do horário, envia o aviso uma única vez por sessão e não processa a mensagem.
+    if (HORARIO_COMERCIAL && !dentroDoHorario()) {
+      if (!avisadoForaHorario.has(jid)) {
+        avisadoForaHorario.add(jid);
+        limparColecaoSeNecessario(avisadoForaHorario);
+        const txtFora = textoForaDeHorario();
+        await simularDigitando(sock, jid, txtFora);
+        await sock.sendMessage(jid, { text: txtFora });
+        console.log(`[BOT] ⏰ Fora do horário — aviso enviado para ${jid.split('@')[0]}`);
+      }
+      return;
+    }
 
     // ── Extrai e armazena nome do usuário ──────────────────────────────────────
     if (message.pushName) {
@@ -909,6 +922,7 @@ async function encerrarSessaoAtiva(sock, jid) {
   usuariosConhecidos.delete(jid);
   ultimoContexto.delete(jid);
   nomeUsuario.delete(jid);
+  avisadoForaHorario.delete(jid);
 
   // Cancela timer de inatividade (sessão encerrada voluntariamente)
   if (sessionTimers.has(jid)) {
@@ -973,21 +987,10 @@ async function processarTexto(sock, jid, texto) {
   // ── Opção 8 → finalizar ────────────────────────────────────────────────────
   if (texto === '8') return await encerrarSessaoAtiva(sock, jid);
 
-  // ── Agradecimentos ─────────────────────────────────────────────────────────
-  const termosAgradecimento = [
-    'obrigado', 'obrigada', 'valeu', 'ok', 'certo', 'entendi',
-    'perfeito', 'ótimo', 'otimo', 'legal', 'show', 'beleza', 'excelente', 'tá bom', 'ta bom',
-  ];
-  if (termosAgradecimento.some(k => texto.includes(k))) {
-    const n      = nomeUsuario.get(jid);
-    const txtAck = `Fico feliz em ajudar${n ? `, *${n}*` : ''}! 😊\n\nSe precisar de mais alguma informação, use o menu abaixo. 👇`;
-    await simularDigitando(sock, jid, txtAck);
-    await sock.sendMessage(jid, { text: txtAck });
-    await sleep(500);
-    return await enviarMenuPrincipal(sock, jid);
-  }
-
   // ── Palavras-chave por tema ────────────────────────────────────────────────
+  // Nota: agradecimentos são tratados MAIS ABAIXO (antes do fallback), só quando
+  // nenhum tema é reconhecido — evita que "ok, quero saber o valor" seja tratado
+  // como agradecimento em vez de responder sobre valores.
 
   // Sobre a Integra
   if (['sobre', 'história', 'historia', 'missão', 'missao', 'proposta',
@@ -1041,6 +1044,29 @@ async function processarTexto(sock, jid, texto) {
   if (['consultor', 'atendente', 'humano', 'quero falar', 'falar com algu',
        'representante', 'pessoa', 'atendimento humano'].some(k => texto.includes(k))) {
     return await acionarConsultor(sock, jid);
+  }
+
+  // ── Agradecimentos / confirmações ──────────────────────────────────────────
+  // Verificado por ÚLTIMO (antes do fallback): só trata como agradecimento quando
+  // nenhuma opção ou tema foi reconhecido acima. Usa correspondência por PALAVRA
+  // EXATA (não substring) para termos de uma palavra — assim "show" não casa em
+  // "showman" nem "ok" dentro de outra palavra. Frases (ex.: "tá bom") usam includes.
+  const termosAgradecimento = [
+    'obrigado', 'obrigada', 'obg', 'valeu', 'vlw', 'ok', 'okay', 'certo', 'entendi',
+    'perfeito', 'ótimo', 'otimo', 'legal', 'show', 'beleza', 'blz', 'excelente', 'tranquilo',
+    'tá bom', 'ta bom', 'tudo certo',
+  ];
+  const palavras = texto.split(/[\s,!?.;:]+/).filter(Boolean);
+  const ehAgradecimento = termosAgradecimento.some(termo =>
+    termo.includes(' ') ? texto.includes(termo) : palavras.includes(termo)
+  );
+  if (ehAgradecimento) {
+    const n      = nomeUsuario.get(jid);
+    const txtAck = `Fico feliz em ajudar${n ? `, *${n}*` : ''}! 😊\n\nSe precisar de mais alguma informação, use o menu abaixo. 👇`;
+    await simularDigitando(sock, jid, txtAck);
+    await sock.sendMessage(jid, { text: txtAck });
+    await sleep(500);
+    return await enviarMenuPrincipal(sock, jid);
   }
 
   // ── Fallback: não reconheceu nada ────────────────────────────────────────

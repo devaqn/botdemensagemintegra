@@ -17,7 +17,7 @@
  *   adminWhatsapp  → número que recebe alertas de consultor
  *   instituicao    → dados gerais da escola
  *   sobre          → pilares e abordagens (seção "Sobre")
- *   modulos        → grade curricular (5 módulos × 25 disciplinas)
+ *   modulos        → grade curricular (5 módulos × 27 disciplinas)
  *   docentes       → informações do corpo docente
  *   condicoes      → preços e benefícios (3 perfis de aluno)
  *   unidade        → endereço e localização da sede
@@ -72,7 +72,7 @@ const CONTENT = {
   },
 
   // ──────────────────────────────────────────────────────────
-  //  Formação: 5 Módulos | 25 Disciplinas
+  //  Formação: 5 Módulos | 27 Disciplinas
   //  Usado na seção 2 do menu (textoFormacao em menus.js)
   //  Para adicionar/remover disciplinas, edite o array 'disciplinas' do módulo.
   // ──────────────────────────────────────────────────────────
